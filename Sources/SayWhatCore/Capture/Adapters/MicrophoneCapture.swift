@@ -1,5 +1,6 @@
 import AVFoundation
 import Foundation
+import os
 import Synchronization
 
 /// Single-use carrier that hands one input buffer to `AVAudioConverter`'s pull
@@ -50,6 +51,12 @@ public enum CaptureError: Error, Sendable, Equatable {
 public final class MicrophoneCapture: AudioCapture, @unchecked Sendable {
     public let source: CaptureSource = .microphone
 
+    /// Diagnostics. `Logger` is wait-free and safe to call from the render
+    /// thread; the per-frame path only logs the first frame and a throttled
+    /// heartbeat so it stays within the audio budget (QUALITY.md §4). View live
+    /// with: `log stream --predicate 'subsystem == "com.boehs.saywhat"'`.
+    private static let log = Logger(subsystem: "com.boehs.saywhat", category: "capture.microphone")
+
     private let engine = AVAudioEngine()
     private let modelFormat: AVAudioFormat
     private let lifecycle = Mutex<Void>(())
@@ -57,6 +64,7 @@ public final class MicrophoneCapture: AudioCapture, @unchecked Sendable {
     private var converter: AVAudioConverter?
     private var continuation: AsyncStream<AudioFrame>.Continuation?
     private var emittedSamples = 0
+    private var emittedFrames = 0
 
     /// Frames per tap buffer. ~85 ms at 48 kHz — small enough for a responsive
     /// live transcript, large enough to keep render-thread overhead negligible.
@@ -78,14 +86,19 @@ public final class MicrophoneCapture: AudioCapture, @unchecked Sendable {
 
     public func start() async throws -> AsyncStream<AudioFrame> {
         guard await AVCaptureDevice.requestAccess(for: .audio) else {
+            Self.log.error("microphone access denied")
             throw CaptureError.microphonePermissionDenied
         }
 
         return try lifecycle.withLock { _ in
             let input = engine.inputNode
             let hardwareFormat = input.inputFormat(forBus: 0)
-            guard hardwareFormat.sampleRate > 0 else { throw CaptureError.inputUnavailable }
+            guard hardwareFormat.sampleRate > 0 else {
+                Self.log.error("no usable input device (hardware sample rate is 0)")
+                throw CaptureError.inputUnavailable
+            }
             guard let converter = AVAudioConverter(from: hardwareFormat, to: modelFormat) else {
+                Self.log.error("could not build converter from hardware format to model format")
                 throw CaptureError.converterUnavailable
             }
             self.converter = converter
@@ -93,6 +106,7 @@ public final class MicrophoneCapture: AudioCapture, @unchecked Sendable {
             let (stream, continuation) = AsyncStream<AudioFrame>.makeStream()
             self.continuation = continuation
             emittedSamples = 0
+            emittedFrames = 0
 
             let onTap: AVAudioNodeTapBlock = { [weak self] buffer, _ in self?.ingest(buffer) }
             input.installTap(
@@ -105,6 +119,10 @@ public final class MicrophoneCapture: AudioCapture, @unchecked Sendable {
             do {
                 try engine.start()
             } catch {
+                Self.log
+                    .error(
+                        "engine failed to start: \(error.localizedDescription, privacy: .public)"
+                    )
                 input.removeTap(onBus: 0)
                 continuation.finish()
                 self.continuation = nil
@@ -112,6 +130,11 @@ public final class MicrophoneCapture: AudioCapture, @unchecked Sendable {
                 throw error
             }
 
+            let hwRate = Int(hardwareFormat.sampleRate)
+            Self.log
+                .info(
+                    "started — hw \(hwRate) Hz \(hardwareFormat.channelCount) ch → model 16 kHz mono"
+                )
             return stream
         }
     }
@@ -123,6 +146,10 @@ public final class MicrophoneCapture: AudioCapture, @unchecked Sendable {
             continuation?.finish()
             continuation = nil
             converter = nil
+            Self.log
+                .info(
+                    "mic capture stopped — emitted \(self.emittedFrames) frames, \(self.emittedSamples) samples"
+                )
         }
     }
 
@@ -148,9 +175,14 @@ public final class MicrophoneCapture: AudioCapture, @unchecked Sendable {
             return next
         }
 
-        guard status != .error, output.frameLength > 0, let channel = output.floatChannelData else {
+        if status == .error {
+            Self.log
+                .error(
+                    "resample failed: \(conversionError?.localizedDescription ?? "unknown", privacy: .public)"
+                )
             return
         }
+        guard output.frameLength > 0, let channel = output.floatChannelData else { return }
 
         let count = Int(output.frameLength)
         let samples = Array(UnsafeBufferPointer(start: channel[0], count: count))
@@ -158,6 +190,21 @@ public final class MicrophoneCapture: AudioCapture, @unchecked Sendable {
             Double(emittedSamples) / Double(AudioStreamFormat.model.sampleRate)
         )
         emittedSamples += count
+        emittedFrames += 1
+
+        // First frame confirms the path is live; a ~22 s heartbeat (256 tap
+        // buffers of 4096 @ 48 kHz) confirms it stays live without flooding the
+        // log.
+        if emittedFrames == 1 {
+            Self.log.info("first frame: \(count) samples @ 16 kHz")
+        } else if emittedFrames.isMultiple(of: 256) {
+            // Read into locals: `Logger`'s interpolation autoclosure would
+            // require `self.`, which swiftformat's redundantSelf then strips —
+            // locals sidestep that fight.
+            let frames = emittedFrames
+            let total = emittedSamples
+            Self.log.debug("heartbeat — \(frames) frames, \(total) samples")
+        }
 
         continuation.yield(AudioFrame(source: source, startOffset: offset, samples: samples))
     }
