@@ -1,9 +1,9 @@
 name: CodeQL
 
+# CodeQL is slow (~13 min on Swift) and rarely changes verdict between a PR and
+# its merge, so it runs on `main` (post-merge) and weekly — not as a PR gate.
 on:
   push:
-    branches: [main]
-  pull_request:
     branches: [main]
   schedule:
     - cron: "0 8 * * 1"
