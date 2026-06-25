@@ -4,9 +4,10 @@
 summarizer for Apple Silicon Macs.** Everything runs locally — no cloud, no
 accounts, no audio ever leaves your machine.
 
-> Status: **pre-implementation.** The architecture and quality bar are locked
-> (see below); code starts at Phase 0. This is an open-source project built in
-> the open.
+> Status: **Phase 0 (capture & durability) in progress.** The architecture and
+> quality bar are locked; the capture domain model + crash-safe durability core
+> have landed. See [CHANGELOG.md](CHANGELOG.md) for what's built so far and
+> [DESIGN.md §14](DESIGN.md) for the build order. Open-source, built in the open.
 
 ## What it does
 
