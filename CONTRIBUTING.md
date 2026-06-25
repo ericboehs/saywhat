@@ -72,4 +72,4 @@ Use the issue templates. For anything security-sensitive, see
 ## License
 
 By contributing, you agree your contributions are licensed under the project's
-[Apache 2.0](LICENSE) license.
+[MIT](LICENSE) license.

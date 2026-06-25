@@ -105,4 +105,4 @@ concurrency, Swift Testing, ≥80% patch coverage, CodeQL, golden-file ML tests)
 
 ## License
 
-[Apache 2.0](LICENSE).
+[MIT](LICENSE).
