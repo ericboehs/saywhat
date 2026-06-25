@@ -1,0 +1,46 @@
+# Xcode / SPM
+.DS_Store
+*.xcuserstate
+xcuserdata/
+*.xcscmblueprint
+*.xccheckout
+DerivedData/
+build/
+.build/
+.swiftpm/
+Package.resolved
+
+# Generated project (regenerate with xcodegen/tuist)
+*.xcodeproj
+*.xcworkspace
+!*.xcworkspace/contents.xcworkspacedata
+
+# Tuist
+Derived/
+*.xcodeproj
+graph.png
+
+# Tooling
+.netrc
+*.profraw
+*.profdata
+coverage/
+*.lcov
+
+# Models (downloaded at runtime — never commit; can be GBs)
+Models/*.mlmodelc
+Models/*.gguf
+Models/*.safetensors
+*.mlpackage
+
+# Recordings & local data (never commit user audio/transcripts)
+Recordings/
+*.m4a
+*.wav
+*.caf
+
+# Secrets
+.env
+*.p8
+*.p12
+*.mobileprovision
