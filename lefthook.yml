@@ -1,0 +1,24 @@
+# lefthook — local git hooks for SayWhat.
+# Install once:  lefthook install
+# https://github.com/evilmartians/lefthook
+#
+# Hooks mirror the CI gates (QUALITY.md §9) so failures surface before push,
+# never via `git commit --no-verify` (banned — fix the failure instead).
+
+pre-commit:
+  parallel: true
+  commands:
+    swiftformat:
+      glob: "*.swift"
+      run: swiftformat --lint {staged_files}
+      fail_text: "Run `swiftformat .` to fix formatting."
+    swiftlint:
+      glob: "*.swift"
+      run: swiftlint lint --strict {staged_files}
+    gitleaks:
+      run: gitleaks git --staged --redact --no-banner
+
+pre-push:
+  commands:
+    test:
+      run: swift test

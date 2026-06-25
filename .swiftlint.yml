@@ -1,0 +1,76 @@
+# SwiftLint configuration for SayWhat (realm/SwiftLint).
+# Run:  swiftlint --strict   (warnings fail the build; QUALITY.md §2 / §9)
+
+included:
+  - Sources
+  - Tests
+
+excluded:
+  - .build
+  - DerivedData
+
+# Opt-in rules beyond the defaults. (Analyzer rules need `swiftlint analyze`
+# and are intentionally not listed here.)
+opt_in_rules:
+  - empty_count
+  - empty_string
+  - first_where
+  - last_where
+  - contains_over_first_not_nil
+  - explicit_init
+  - closure_spacing
+  - collection_alignment
+  - convenience_type
+  - fatal_error_message
+  - force_unwrapping
+  - redundant_nil_coalescing
+  - sorted_first_last
+  - toggle_bool
+  - unneeded_parentheses_in_closure_argument
+  - vertical_whitespace_closing_braces
+  - yoda_condition
+  - multiline_arguments
+  - multiline_parameters
+  - operator_usage_whitespace
+  - overridden_super_call
+
+line_length:
+  warning: 120
+  error: 200
+  ignores_comments: true
+  ignores_urls: true
+
+# Require trailing commas in multiline collections so SwiftLint agrees with
+# SwiftFormat (which adds them); the two must not fight. QUALITY.md §2.
+trailing_comma:
+  mandatory_comma: true
+
+# Short names are idiomatic in DSP/audio math; allow a curated set.
+identifier_name:
+  min_length:
+    warning: 2
+  excluded:
+    - id
+    - x
+    - y
+    - n
+    - i
+    - db
+    - hz
+    - to
+
+type_name:
+  max_length:
+    warning: 50
+    error: 60
+
+function_body_length:
+  warning: 60
+  error: 100
+
+file_length:
+  warning: 500
+  error: 800
+
+cyclomatic_complexity:
+  warning: 12

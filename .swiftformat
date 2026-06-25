@@ -1,0 +1,30 @@
+# SwiftFormat configuration for SayWhat (nicklockwood/SwiftFormat).
+# Format:  swiftformat .
+# Verify:  swiftformat --lint .   (what CI runs; QUALITY.md §2)
+#
+# One formatter only: we do NOT run Apple `swift format` (QUALITY.md §2 "Avoid").
+
+--swiftversion 6.0
+
+# Layout — 4-space indent matches .editorconfig.
+--indent 4
+--maxwidth 100
+--wraparguments before-first
+--wrapparameters before-first
+--wrapcollections before-first
+--closingparen balanced
+
+# Cleanups
+--self remove
+--importgrouping testable-bottom
+
+# Rules enabled beyond the defaults
+--enable blankLinesBetweenImports
+--enable wrapEnumCases
+
+# Disabled: too aggressive about converting regular comments above
+# declarations (e.g. Package.swift manifest comments) into doc comments.
+--disable docComments
+
+# Nothing to format in generated/build output.
+--exclude .build,DerivedData

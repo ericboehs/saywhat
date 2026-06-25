@@ -1,0 +1,29 @@
+# Dependabot — automated dependency updates for SayWhat.
+# https://docs.github.com/code-security/dependabot (QUALITY.md §7)
+version: 2
+updates:
+  # Swift Package Manager dependencies (FluidAudio, mlx-swift-lm, GRDB, …).
+  - package-ecosystem: "swift"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 10
+    commit-message:
+      prefix: "build"
+      include: "scope"
+    groups:
+      swift-dependencies:
+        patterns:
+          - "*"
+
+  # Pinned GitHub Actions in .github/workflows.
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    commit-message:
+      prefix: "ci"
+    groups:
+      actions:
+        patterns:
+          - "*"

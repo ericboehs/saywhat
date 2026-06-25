@@ -1,0 +1,30 @@
+# Codecov configuration for SayWhat.
+# https://docs.codecov.com/docs/codecov-yaml  (QUALITY.md §6)
+
+coverage:
+  status:
+    project:
+      default:
+        # We don't chase a high absolute number on an audio/ML app; just don't
+        # regress. ~70% target, 1% drop tolerance.
+        target: 70%
+        threshold: 1%
+    patch:
+      default:
+        # New/changed lines must be covered. This is the real gate.
+        target: 80%
+        threshold: 0%
+
+comment:
+  layout: "reach, diff, flags, files"
+  require_changes: true
+
+# The hardware/AV adapter, SwiftUI previews, generated code, and tests aren't
+# meaningfully unit-testable; the pure logic they wrap is. QUALITY.md §6.
+ignore:
+  - "Tests/**"
+  - "**/*+Preview.swift"
+  - "**/Preview Content/**"
+  - "Sources/Capture/**"          # AVAudioEngine / ScreenCaptureKit adapter
+  - "**/*Adapter.swift"
+  - "**/*.generated.swift"

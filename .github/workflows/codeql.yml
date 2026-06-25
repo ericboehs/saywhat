@@ -1,0 +1,45 @@
+name: CodeQL
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    - cron: "0 8 * * 1"
+
+concurrency:
+  group: codeql-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  analyze:
+    name: analyze (swift)
+    runs-on: macos-26
+    permissions:
+      contents: read
+      security-events: write   # upload CodeQL results
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Select Xcode 26.5
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: "26.5"
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v3
+        with:
+          languages: swift
+
+      # CodeQL Swift needs a real build — no `autobuild`. QUALITY.md §7.
+      - name: Build
+        run: swift build
+
+      - name: Perform CodeQL Analysis
+        uses: github/codeql-action/analyze@v3
+        with:
+          category: "/language:swift"
