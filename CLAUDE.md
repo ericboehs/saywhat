@@ -66,17 +66,19 @@ runs on the **Neural Engine**, not the GPU.
 
 ## Build & test
 
-> The project is generated (Tuist or XcodeGen — see QUALITY.md) to avoid
-> `.xcodeproj` merge conflicts. Commands below assume the generator is in place;
-> until then this is the intended shape.
+> The app target lives in a committed **vanilla** `SayWhat.xcodeproj` (no
+> generator). Xcode's filesystem-synchronized groups keep file add/remove out of
+> `project.pbxproj`, so merge conflicts are rare; build settings live as text in
+> `Config/SayWhat.xcconfig`. See QUALITY.md "Project gen".
 
 ```bash
-# Generate the Xcode project (if using XcodeGen/Tuist)
-# xcodegen generate     # or: tuist generate
-
-# Build & test (SPM)
+# Build & test the pure core (SPM)
 swift build
 swift test --enable-code-coverage
+
+# Build the macOS app target (needs Xcode: Info.plist, entitlements, .app bundle)
+xcodebuild build -project SayWhat.xcodeproj -scheme SayWhat \
+  -destination 'platform=macOS' CODE_SIGNING_ALLOWED=NO
 
 # Lint / format (see QUALITY.md for the canonical config)
 swift format lint --recursive Sources Tests   # Apple swift-format
@@ -93,9 +95,12 @@ can't compile MLX's Metal kernels. Build/run the app target in Xcode (or
 ## Repo layout (intended)
 
 ```
+App/                 # app target (SwiftUI) — built by the committed SayWhat.xcodeproj
+Config/              # SayWhat.xcconfig + entitlements (build settings as text)
 Sources/
-  SayWhat/           # app target (SwiftUI: menu bar + main window)
+  SayWhatCore/       # the pure, SPM-testable core (the engine subdirs below live here)
   Capture/           # AVAudioEngine + ScreenCaptureKit, dual-track, AAC encode
+                     #   Adapters/ — hardware-touching impls (coverage-excluded)
   Transcription/     # Transcriber protocol + Apple/Parakeet/WhisperKit impls
   Diarization/       # Diarizer protocol + Sortformer/pyannote + SpeakerManager
   Summarization/     # Summarizer protocol + AppleFM/MLX impls + map-reduce
@@ -138,8 +143,9 @@ DESIGN.md  QUALITY.md  CLAUDE.md
 ## Status
 
 **Phase 0 (capture & durability) in progress.** Docs + tooling/CI are in place;
-the capture domain model and crash-safe durability core have landed in
-`SayWhatCore` (pure, tested). Still to come in Phase 0: the
-`AVAudioEngine`/`ScreenCaptureKit` adapters and the app target (needs Xcode
-project generation + TCC entitlements). See [CHANGELOG.md](CHANGELOG.md) for
-what's shipped and DESIGN.md §14 for the build order.
+the capture domain model + crash-safe durability core, the `AVAudioEngine`
+microphone adapter, and a minimal SwiftUI app target (committed vanilla
+`SayWhat.xcodeproj`) have landed. Still to come in Phase 0: the
+`ScreenCaptureKit` system-audio adapter and the `AVAssetWriter`-backed durable
+AAC writer. See [CHANGELOG.md](CHANGELOG.md) for what's shipped and DESIGN.md
+§14 for the build order.
