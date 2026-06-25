@@ -44,3 +44,8 @@ Recordings/
 *.p8
 *.p12
 *.mobileprovision
+
+# Claude Code: track shared config + hooks, ignore local overrides.
+# (.claude is ignored by the global gitignore; these files are force-added.)
+.claude/settings.local.json
+.claude/*.local.json
