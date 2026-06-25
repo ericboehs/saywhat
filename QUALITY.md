@@ -134,6 +134,11 @@ design regression, not a style nit.
   GitHub push protection are clean; no keys, certs, or tokens committed.
 - **Dependencies scanned** — *Required* — Dependabot (SwiftPM, GA) is enabled and
   `osv-scanner scan -L Package.resolved` reports no unfixed high/critical CVEs.
+- **Actions pinned to full SHAs** — *Required* — every `uses:` in
+  `.github/workflows` is pinned to a full 40-char commit SHA (with a `# vX.Y.Z`
+  comment), never a moving tag like `@v4`. A tag can be force-pushed to malicious
+  code; a SHA can't. Dependabot's `github-actions` group bumps the SHA and the
+  comment together.
 - **Trivy in CI** — *Avoid* — Trivy was supply-chain-compromised twice in March
   2026; use OSV-Scanner (and Syft+Grype for SBOM) instead.
 - **Minimal entitlements + Hardened Runtime** — *Required* — every entitlement is
