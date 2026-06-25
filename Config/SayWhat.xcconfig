@@ -1,0 +1,40 @@
+// Build settings for the SayWhat app target. Kept in an .xcconfig (not the
+// pbxproj) so changes are plain-text and reviewable — the one residual merge
+// surface of the vanilla-Xcode approach. See QUALITY.md §1, §7.
+
+// Identity
+PRODUCT_NAME = SayWhat
+PRODUCT_BUNDLE_IDENTIFIER = com.boehs.saywhat
+MARKETING_VERSION = 0.0.0
+CURRENT_PROJECT_VERSION = 1
+
+// Platform — Apple Silicon, macOS 26 (Tahoe) only.
+SDKROOT = macosx
+MACOSX_DEPLOYMENT_TARGET = 26.0
+SUPPORTED_PLATFORMS = macosx
+
+// Swift 6: strict concurrency, warnings as errors (matches the SPM core).
+SWIFT_VERSION = 6.0
+SWIFT_STRICT_CONCURRENCY = complete
+SWIFT_TREAT_WARNINGS_AS_ERRORS = YES
+GCC_TREAT_WARNINGS_AS_ERRORS = YES
+SWIFT_EMIT_LOC_STRINGS = YES
+
+// Generated Info.plist + TCC usage strings. The microphone string is the
+// prompt the user sees on first capture; ScreenCaptureKit uses a system
+// Screen-Recording prompt with no Info.plist key.
+GENERATE_INFOPLIST_FILE = YES
+INFOPLIST_KEY_NSMicrophoneUsageDescription = SayWhat records your microphone to transcribe meetings on-device. Audio never leaves your Mac.
+INFOPLIST_KEY_LSApplicationCategoryType = public.app-category.productivity
+INFOPLIST_KEY_NSHumanReadableCopyright = MIT-licensed. On-device only.
+
+// Signing & runtime — minimal entitlements + Hardened Runtime (QUALITY.md §7).
+CODE_SIGN_STYLE = Automatic
+CODE_SIGN_ENTITLEMENTS = Config/SayWhat.entitlements
+ENABLE_HARDENED_RUNTIME = YES
+
+// Hygiene
+ENABLE_USER_SCRIPT_SANDBOXING = YES
+ALWAYS_SEARCH_USER_PATHS = NO
+LD_RUNPATH_SEARCH_PATHS = $(inherited) @executable_path/../Frameworks
+COMBINE_HIDPI_IMAGES = YES

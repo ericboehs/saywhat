@@ -10,15 +10,10 @@ build/
 .swiftpm/
 Package.resolved
 
-# Generated project (regenerate with xcodegen/tuist)
-*.xcodeproj
-*.xcworkspace
-!*.xcworkspace/contents.xcworkspacedata
-
-# Tuist
-Derived/
-*.xcodeproj
-graph.png
+# The vanilla SayWhat.xcodeproj is committed (no generator — see QUALITY.md
+# "Project gen"). Ignore only its user-specific and resolved-package bits;
+# xcuserdata/ and Package.resolved are already covered above.
+*.xcworkspace/xcuserdata/
 
 # Tooling
 .netrc

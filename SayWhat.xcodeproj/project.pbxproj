@@ -1,0 +1,213 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 77;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		DEADBEEF0000000000000014 /* SayWhatCore in Frameworks */ = {isa = PBXBuildFile; productRef = DEADBEEF0000000000000013 /* SayWhatCore */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXFileReference section */
+		DEADBEEF0000000000000007 /* SayWhat.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = SayWhat.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		DEADBEEF0000000000000008 /* SayWhat.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = SayWhat.xcconfig; sourceTree = "<group>"; };
+		DEADBEEF0000000000000015 /* SayWhat.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = SayWhat.entitlements; sourceTree = "<group>"; };
+/* End PBXFileReference section */
+
+/* Begin PBXFileSystemSynchronizedRootGroup section */
+		DEADBEEF0000000000000003 /* App */ = {isa = PBXFileSystemSynchronizedRootGroup; explicitFileTypes = {}; explicitFolders = (); path = App; sourceTree = "<group>"; };
+/* End PBXFileSystemSynchronizedRootGroup section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		DEADBEEF0000000000000010 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				DEADBEEF0000000000000014 /* SayWhatCore in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		DEADBEEF0000000000000004 = {
+			isa = PBXGroup;
+			children = (
+				DEADBEEF0000000000000003 /* App */,
+				DEADBEEF0000000000000006 /* Config */,
+				DEADBEEF0000000000000005 /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		DEADBEEF0000000000000005 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				DEADBEEF0000000000000007 /* SayWhat.app */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+		DEADBEEF0000000000000006 /* Config */ = {
+			isa = PBXGroup;
+			children = (
+				DEADBEEF0000000000000008 /* SayWhat.xcconfig */,
+				DEADBEEF0000000000000015 /* SayWhat.entitlements */,
+			);
+			path = Config;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		DEADBEEF0000000000000002 /* SayWhat */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = DEADBEEF000000000000000A /* Build configuration list for PBXNativeTarget "SayWhat" */;
+			buildPhases = (
+				DEADBEEF000000000000000F /* Sources */,
+				DEADBEEF0000000000000010 /* Frameworks */,
+				DEADBEEF0000000000000011 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			fileSystemSynchronizedGroups = (
+				DEADBEEF0000000000000003 /* App */,
+			);
+			name = SayWhat;
+			packageProductDependencies = (
+				DEADBEEF0000000000000013 /* SayWhatCore */,
+			);
+			productName = SayWhat;
+			productReference = DEADBEEF0000000000000007 /* SayWhat.app */;
+			productType = "com.apple.product-type.application";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		DEADBEEF0000000000000001 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = 1;
+				LastSwiftUpdateCheck = 2650;
+				LastUpgradeCheck = 2650;
+				TargetAttributes = {
+					DEADBEEF0000000000000002 = {
+						CreatedOnToolsVersion = 26.5;
+					};
+				};
+			};
+			buildConfigurationList = DEADBEEF0000000000000009 /* Build configuration list for PBXProject "SayWhat" */;
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				en,
+				Base,
+			);
+			mainGroup = DEADBEEF0000000000000004;
+			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+				DEADBEEF0000000000000012 /* XCLocalSwiftPackageReference "." */,
+			);
+			preferredProjectObjectVersion = 77;
+			productRefGroup = DEADBEEF0000000000000005 /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				DEADBEEF0000000000000002 /* SayWhat */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		DEADBEEF0000000000000011 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		DEADBEEF000000000000000F /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin XCBuildConfiguration section */
+		DEADBEEF000000000000000B /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ONLY_ACTIVE_ARCH = YES;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "DEBUG $(inherited)";
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+			};
+			name = Debug;
+		};
+		DEADBEEF000000000000000C /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				SWIFT_COMPILATION_MODE = wholemodule;
+			};
+			name = Release;
+		};
+		DEADBEEF000000000000000D /* Debug */ = {
+			isa = XCBuildConfiguration;
+			baseConfigurationReference = DEADBEEF0000000000000008 /* SayWhat.xcconfig */;
+			buildSettings = {
+			};
+			name = Debug;
+		};
+		DEADBEEF000000000000000E /* Release */ = {
+			isa = XCBuildConfiguration;
+			baseConfigurationReference = DEADBEEF0000000000000008 /* SayWhat.xcconfig */;
+			buildSettings = {
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		DEADBEEF0000000000000009 /* Build configuration list for PBXProject "SayWhat" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				DEADBEEF000000000000000B /* Debug */,
+				DEADBEEF000000000000000C /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		DEADBEEF000000000000000A /* Build configuration list for PBXNativeTarget "SayWhat" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				DEADBEEF000000000000000D /* Debug */,
+				DEADBEEF000000000000000E /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+/* End XCConfigurationList section */
+
+/* Begin XCLocalSwiftPackageReference section */
+		DEADBEEF0000000000000012 /* XCLocalSwiftPackageReference "." */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = .;
+		};
+/* End XCLocalSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		DEADBEEF0000000000000013 /* SayWhatCore */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = SayWhatCore;
+		};
+/* End XCSwiftPackageProductDependency section */
+	};
+	rootObject = DEADBEEF0000000000000001 /* Project object */;
+}

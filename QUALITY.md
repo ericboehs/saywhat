@@ -165,18 +165,22 @@ GitHub Actions on `macos-26` (Apple Silicon), Xcode pinned via
    reporter for inline annotations).
 2. **test** — `swift test --enable-code-coverage` (Swift Testing) → `llvm-cov
    export` lcov → Codecov, **patch gate 80%**. Logs via `xcbeautify`.
-3. **deadcode** *(optional)* — `periphery scan` with baseline.
-4. **security** *(PR gate)* — gitleaks (SARIF) + OSV-Scanner on
+3. **app** — `xcodebuild build` (unsigned, `CODE_SIGNING_ALLOWED=NO`) of the
+   committed `SayWhat.xcodeproj` app target on `macos-26`; SPM alone can't build
+   the `.app` (Info.plist / entitlements / bundle). Logs via `xcbeautify`.
+4. **deadcode** *(optional)* — `periphery scan` with baseline.
+5. **security** *(PR gate)* — gitleaks (SARIF) + OSV-Scanner on
    `Package.resolved`. Dependabot enabled at repo level.
-5. **codeql** *(on `main` + weekly, not a PR gate)* — CodeQL (Swift, explicit
+6. **codeql** *(on `main` + weekly, not a PR gate)* — CodeQL (Swift, explicit
    `swift build`); slow (~13 min) and rarely flips between a PR and its merge.
-6. **docs** *(on `main`)* — DocC → GitHub Pages.
-7. **release** *(on tag)* — archive → codesign (Developer ID, Hardened Runtime)
+7. **docs** *(on `main`)* — DocC → GitHub Pages.
+8. **release** *(on tag)* — archive → codesign (Developer ID, Hardened Runtime)
    → `notarytool submit --wait` → `stapler staple` → `create-dmg` →
    `generate_appcast` (Sparkle, EdDSA-signed) → GitHub Release.
 
-**Branch protection** — *Required* — `lint`, `test` (+coverage), `security` must
-be green and ≥1 review before merge; squash-merge for clean history; the
+**Branch protection** — *Required* — `lint`, `test` (+coverage), `app`,
+`security` must be green and ≥1 review before merge; squash-merge for clean
+history; the
 [PR checklist](.github/PULL_REQUEST_TEMPLATE.md) must be fully ticked.
 
 ---
@@ -199,7 +203,7 @@ be green and ≥1 review before merge; squash-merge for clean history; the
 | SBOM | **Syft** (+ Grype) | optional |
 | CI | **GitHub Actions** `macos-26` + **xcbeautify** | primary |
 | Pre-commit | **lefthook** | recommended |
-| Project gen | plain **SPM**, **Tuist** when needed | primary |
+| Project gen | plain **SPM** + committed vanilla **`.xcodeproj`** (no generator; Tuist only if it ever goes multi-module) | primary |
 | Changelog | Conventional Commits + **git-cliff** | recommended |
 | Updates | **Sparkle** (EdDSA appcast) | primary (release) |
 | Notarization | **notarytool** (NOT altool) | required (release) |

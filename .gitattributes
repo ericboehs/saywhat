@@ -1,0 +1,7 @@
+# Treat the Xcode project as text and union-merge it: when two branches each add
+# an object, keep both sides' lines instead of conflicting. With Xcode's
+# filesystem-synchronized groups, file add/remove no longer touches this file at
+# all, so conflicts are rare — this is cheap insurance. (Vanilla-Xcode decision;
+# see QUALITY.md "Project gen".)
+*.pbxproj merge=union
+*.pbxproj -diff
