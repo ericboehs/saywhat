@@ -137,5 +137,9 @@ DESIGN.md  QUALITY.md  CLAUDE.md
 
 ## Status
 
-Pre-implementation. Docs first (DESIGN, QUALITY, CLAUDE), then tooling/CI, then
-Phase 0 (capture + durable recording). See DESIGN.md §14 for build order.
+**Phase 0 (capture & durability) in progress.** Docs + tooling/CI are in place;
+the capture domain model and crash-safe durability core have landed in
+`SayWhatCore` (pure, tested). Still to come in Phase 0: the
+`AVAudioEngine`/`ScreenCaptureKit` adapters and the app target (needs Xcode
+project generation + TCC entitlements). See [CHANGELOG.md](CHANGELOG.md) for
+what's shipped and DESIGN.md §14 for the build order.

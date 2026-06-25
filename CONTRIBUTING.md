@@ -39,7 +39,10 @@ diarizer/summarizer for Apple Silicon Macs. Before you start, read:
    ```
 4. **Commit** with [Conventional Commits](https://www.conventionalcommits.org/)
    (`feat:`, `fix:`, `docs:`, `refactor:`, `test:`, `chore:`). **Never use
-   `git commit --no-verify`** — fix the hook failure instead.
+   `git commit --no-verify`** — fix the hook failure instead. `CHANGELOG.md` is
+   generated from these messages by [git-cliff](https://git-cliff.org) (config
+   in `cliff.toml`; regenerate with `git-cliff -o CHANGELOG.md`) — don't edit it
+   by hand.
 5. **Open a PR.** Fill in the template and tick every checklist box (or strike
    it with a one-line reason). CI must be green and the checklist complete to
    merge.

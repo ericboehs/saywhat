@@ -1,0 +1,52 @@
+# git-cliff configuration for SayWhat.
+# Generates CHANGELOG.md from Conventional Commits (QUALITY.md §8).
+#   Regenerate everything:  git-cliff -o CHANGELOG.md
+#   Update for a new tag:    git-cliff --tag vX.Y.Z -o CHANGELOG.md
+# https://git-cliff.org/docs/configuration
+
+[changelog]
+header = """
+# Changelog
+
+All notable changes to SayWhat are documented here. This file is generated from
+[Conventional Commits](https://www.conventionalcommits.org/) with
+[git-cliff](https://git-cliff.org); edit commit messages, not this file. The
+format follows [Keep a Changelog](https://keepachangelog.com).\n
+"""
+body = """
+{% if version %}\
+## [{{ version | trim_start_matches(pat="v") }}] - {{ timestamp | date(format="%Y-%m-%d") }}
+{% else %}\
+## [Unreleased]
+{% endif %}
+{% for group, commits in commits | group_by(attribute="group") %}\
+### {{ group | upper_first }}
+{% for commit in commits %}\
+- {{ commit.message | split(pat="\n") | first | upper_first }}{% if commit.id %} ([{{ commit.id | truncate(length=7, end="") }}](https://github.com/ericboehs/saywhat/commit/{{ commit.id }})){% endif %}
+{% endfor %}
+{% endfor %}"""
+trim = true
+footer = ""
+
+[git]
+conventional_commits = true
+filter_unconventional = true
+split_commits = false
+# Strip the trailing PR number "(#12)" so it doesn't duplicate the commit link.
+commit_preprocessors = [
+    { pattern = '\s*\(#[0-9]+\)', replace = "" },
+]
+commit_parsers = [
+    { message = "^feat", group = "🚀 Features" },
+    { message = "^fix", group = "🐛 Bug Fixes" },
+    { message = "^perf", group = "⚡ Performance" },
+    { message = "^refactor", group = "🚜 Refactor" },
+    { message = "^test", group = "🧪 Testing" },
+    { message = "^docs", group = "📚 Documentation" },
+    { message = "^(ci|build)", group = "⚙️ CI & Build" },
+    { message = "^chore", group = "🧹 Miscellaneous" },
+    { message = ".*", group = "🧹 Miscellaneous" },
+]
+protect_breaking_commits = true
+tag_pattern = "v[0-9].*"
+sort_commits = "oldest"
