@@ -3,22 +3,6 @@ import Foundation
 import os
 import Synchronization
 
-/// Single-use carrier that hands one input buffer to `AVAudioConverter`'s pull
-/// block exactly once. The converter invokes the block synchronously on the
-/// calling (render) thread, so the `@unchecked Sendable` assertion needed to
-/// move the non-`Sendable` buffer into that `@Sendable` block is sound.
-private final class PendingInput: @unchecked Sendable {
-    private var buffer: AVAudioPCMBuffer?
-    init(_ buffer: AVAudioPCMBuffer) {
-        self.buffer = buffer
-    }
-
-    func take() -> AVAudioPCMBuffer? {
-        defer { buffer = nil }
-        return buffer
-    }
-}
-
 /// Errors surfaced by the hardware capture adapters.
 public enum CaptureError: Error, Sendable, Equatable {
     /// The user declined (or has not yet granted) microphone access.
@@ -41,7 +25,7 @@ public enum CaptureError: Error, Sendable, Equatable {
 ///
 /// **Threading.** The tap block runs on Core Audio's real-time render thread.
 /// It does no allocation-heavy or blocking work beyond the resample and a
-/// non-blocking `continuation.yield`. Per-session fields (`converter`,
+/// non-blocking `continuation.yield`. Per-session fields (`resampler`,
 /// `continuation`, `emittedSamples`) are written once in ``start()`` before the
 /// tap is installed and read only from that single render thread until
 /// ``stop()`` removes the tap — so they need no lock; `lifecycle` serializes
@@ -61,7 +45,7 @@ public final class MicrophoneCapture: AudioCapture, @unchecked Sendable {
     private let modelFormat: AVAudioFormat
     private let lifecycle = Mutex<Void>(())
 
-    private var converter: AVAudioConverter?
+    private var resampler: ModelResampler?
     private var continuation: AsyncStream<AudioFrame>.Continuation?
     private var emittedSamples = 0
     private var emittedFrames = 0
@@ -97,11 +81,14 @@ public final class MicrophoneCapture: AudioCapture, @unchecked Sendable {
                 Self.log.error("no usable input device (hardware sample rate is 0)")
                 throw CaptureError.inputUnavailable
             }
-            guard let converter = AVAudioConverter(from: hardwareFormat, to: modelFormat) else {
+            guard let resampler = ModelResampler(
+                inputFormat: hardwareFormat,
+                modelFormat: modelFormat
+            ) else {
                 Self.log.error("could not build converter from hardware format to model format")
                 throw CaptureError.converterUnavailable
             }
-            self.converter = converter
+            self.resampler = resampler
 
             let (stream, continuation) = AsyncStream<AudioFrame>.makeStream()
             self.continuation = continuation
@@ -126,7 +113,7 @@ public final class MicrophoneCapture: AudioCapture, @unchecked Sendable {
                 input.removeTap(onBus: 0)
                 continuation.finish()
                 self.continuation = nil
-                self.converter = nil
+                self.resampler = nil
                 throw error
             }
 
@@ -145,7 +132,7 @@ public final class MicrophoneCapture: AudioCapture, @unchecked Sendable {
             if engine.isRunning { engine.stop() }
             continuation?.finish()
             continuation = nil
-            converter = nil
+            resampler = nil
             Self.log
                 .info(
                     "mic capture stopped — emitted \(self.emittedFrames) frames, \(self.emittedSamples) samples"
@@ -156,36 +143,15 @@ public final class MicrophoneCapture: AudioCapture, @unchecked Sendable {
     /// Resample one hardware buffer to the model format and emit it. Runs on the
     /// real-time render thread; see the type's threading note.
     private func ingest(_ buffer: AVAudioPCMBuffer) {
-        guard let converter, let continuation, buffer.frameLength > 0 else { return }
+        guard let resampler, let continuation, buffer.frameLength > 0 else { return }
 
-        let ratio = modelFormat.sampleRate / buffer.format.sampleRate
-        let capacity = AVAudioFrameCount(Double(buffer.frameLength) * ratio) + 16
-        guard let output = AVAudioPCMBuffer(pcmFormat: modelFormat, frameCapacity: capacity) else {
+        guard let samples = resampler.resample(buffer) else {
+            Self.log.error("resample failed")
             return
         }
+        guard !samples.isEmpty else { return }
 
-        let pending = PendingInput(buffer)
-        var conversionError: NSError?
-        let status = converter.convert(to: output, error: &conversionError) { _, inputStatus in
-            guard let next = pending.take() else {
-                inputStatus.pointee = .noDataNow
-                return nil
-            }
-            inputStatus.pointee = .haveData
-            return next
-        }
-
-        if status == .error {
-            Self.log
-                .error(
-                    "resample failed: \(conversionError?.localizedDescription ?? "unknown", privacy: .public)"
-                )
-            return
-        }
-        guard output.frameLength > 0, let channel = output.floatChannelData else { return }
-
-        let count = Int(output.frameLength)
-        let samples = Array(UnsafeBufferPointer(start: channel[0], count: count))
+        let count = samples.count
         let offset = Duration.seconds(
             Double(emittedSamples) / Double(AudioStreamFormat.model.sampleRate)
         )
