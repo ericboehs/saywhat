@@ -25,6 +25,6 @@ ignore:
   - "Tests/**"
   - "**/*+Preview.swift"
   - "**/Preview Content/**"
-  - "Sources/Capture/**"          # AVAudioEngine / ScreenCaptureKit adapter
+  - "**/Capture/Adapters/**"      # AVAudioEngine / ScreenCaptureKit hardware adapters
   - "**/*Adapter.swift"
   - "**/*.generated.swift"
