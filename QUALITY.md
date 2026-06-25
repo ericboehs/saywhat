@@ -125,9 +125,11 @@ design regression, not a style nit.
 
 ## 7. Security & supply chain
 
-- **CodeQL clean** — *Required* — GitHub CodeQL (Swift, GA) runs on every PR with
-  no unresolved high/critical alerts. (CodeQL Swift needs an explicit
-  `swift build` step — no `autobuild`.)
+- **CodeQL clean** — *Required* — GitHub CodeQL (Swift, GA) runs on `main`
+  (post-merge) and weekly with no unresolved high/critical alerts. It's kept off
+  the PR critical path because it's slow (~13 min) and rarely changes verdict
+  between a PR and its merge. (CodeQL Swift needs an explicit `swift build`
+  step — no `autobuild`.)
 - **No secrets in history** — *Required* — `gitleaks` (pre-commit + CI) and
   GitHub push protection are clean; no keys, certs, or tokens committed.
 - **Dependencies scanned** — *Required* — Dependabot (SwiftPM, GA) is enabled and
@@ -159,10 +161,12 @@ GitHub Actions on `macos-26` (Apple Silicon), Xcode pinned via
 2. **test** — `swift test --enable-code-coverage` (Swift Testing) → `llvm-cov
    export` lcov → Codecov, **patch gate 80%**. Logs via `xcbeautify`.
 3. **deadcode** *(optional)* — `periphery scan` with baseline.
-4. **security** — CodeQL (Swift, explicit `swift build`) + gitleaks (SARIF) +
-   OSV-Scanner on `Package.resolved`. Dependabot enabled at repo level.
-5. **docs** *(on `main`)* — DocC → GitHub Pages.
-6. **release** *(on tag)* — archive → codesign (Developer ID, Hardened Runtime)
+4. **security** *(PR gate)* — gitleaks (SARIF) + OSV-Scanner on
+   `Package.resolved`. Dependabot enabled at repo level.
+5. **codeql** *(on `main` + weekly, not a PR gate)* — CodeQL (Swift, explicit
+   `swift build`); slow (~13 min) and rarely flips between a PR and its merge.
+6. **docs** *(on `main`)* — DocC → GitHub Pages.
+7. **release** *(on tag)* — archive → codesign (Developer ID, Hardened Runtime)
    → `notarytool submit --wait` → `stapler staple` → `create-dmg` →
    `generate_appcast` (Sparkle, EdDSA-signed) → GitHub Release.
 

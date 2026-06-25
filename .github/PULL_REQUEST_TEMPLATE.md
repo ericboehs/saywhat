@@ -28,7 +28,7 @@ See QUALITY.md for the full quality bar.
 - [ ] `swiftformat --lint` and `swiftlint --strict` are clean
 - [ ] Tests added/updated (Swift Testing); patch coverage ≥ 80%
 - [ ] ML/audio changes: golden-file + WER/DER no-regress checks pass
-- [ ] No secrets committed; CodeQL/OSV-Scanner clean
+- [ ] No secrets committed; gitleaks/OSV-Scanner clean (CodeQL runs post-merge on `main`)
 
 **Docs & commits**
 - [ ] Conventional Commit messages
