@@ -24,7 +24,7 @@ jobs:
       contents: read
       security-events: write   # upload SARIF
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0        # full history so the scan covers all commits
 
@@ -39,7 +39,7 @@ jobs:
 
       - name: Upload SARIF
         if: always()
-        uses: github/codeql-action/upload-sarif@v3
+        uses: github/codeql-action/upload-sarif@v4
         with:
           sarif_file: gitleaks.sarif
           category: gitleaks
@@ -48,7 +48,7 @@ jobs:
     name: osv-scanner
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # Trivy is avoided (supply-chain-compromised twice in March 2026); we use
       # OSV-Scanner on the SwiftPM lockfile instead. QUALITY.md §7.
