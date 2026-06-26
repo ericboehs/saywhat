@@ -430,7 +430,7 @@ struct ContentView: View {
 
     var body: some View {
         VStack(spacing: 16) {
-            Text("SayWhat")
+            Text("Say What")
                 .font(.largeTitle.bold())
             Text(model.isRecording ? "Recording…" : "Idle")
                 .foregroundStyle(.secondary)

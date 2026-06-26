@@ -2,8 +2,11 @@
 // pbxproj) so changes are plain-text and reviewable — the one residual merge
 // surface of the vanilla-Xcode approach. See QUALITY.md §1, §7.
 
-// Identity
+// Identity. PRODUCT_NAME stays SayWhat (the .app, scheme, and bundle keep the
+// space-free code identifier); the user-facing name carries a space via the
+// display name — menu bar, About box, and Finder all show "Say What".
 PRODUCT_NAME = SayWhat
+INFOPLIST_KEY_CFBundleDisplayName = Say What
 PRODUCT_BUNDLE_IDENTIFIER = com.boehs.saywhat
 MARKETING_VERSION = 0.0.0
 CURRENT_PROJECT_VERSION = 1
@@ -24,8 +27,8 @@ SWIFT_EMIT_LOC_STRINGS = YES
 // prompt the user sees on first capture; ScreenCaptureKit uses a system
 // Screen-Recording prompt with no Info.plist key.
 GENERATE_INFOPLIST_FILE = YES
-INFOPLIST_KEY_NSMicrophoneUsageDescription = SayWhat records your microphone to transcribe meetings on-device. Audio never leaves your Mac.
-INFOPLIST_KEY_NSSpeechRecognitionUsageDescription = SayWhat transcribes your meetings on-device. Speech is processed locally and never leaves your Mac.
+INFOPLIST_KEY_NSMicrophoneUsageDescription = Say What records your microphone to transcribe meetings on-device. Audio never leaves your Mac.
+INFOPLIST_KEY_NSSpeechRecognitionUsageDescription = Say What transcribes your meetings on-device. Speech is processed locally and never leaves your Mac.
 INFOPLIST_KEY_LSApplicationCategoryType = public.app-category.productivity
 INFOPLIST_KEY_NSHumanReadableCopyright = MIT-licensed. On-device only.
 
