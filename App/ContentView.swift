@@ -151,6 +151,8 @@ final class CaptureModel {
                 Task { @MainActor in self.finalizeStatus = Self.describe(phase) }
             }
             finalTranscript = transcript
+        } catch let timeout as TimeoutError {
+            errorMessage = "Finalize timed out at \(timeout.label). The recording is saved — try again."
         } catch {
             errorMessage = "finalize: \(error)"
         }

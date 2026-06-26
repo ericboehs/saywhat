@@ -16,6 +16,11 @@ public struct FinalPass: Sendable {
     /// instance) because each ``Transcriber`` is bound to one ``CaptureSource``.
     public typealias MakeTranscriber = @Sendable (CaptureSource) -> any Transcriber
 
+    /// Maps a track's audio length to the watchdog budget for an engine stage
+    /// over it. Audio-proportional (with a floor) so a two-hour meeting never
+    /// false-trips while a genuine deadlock still surfaces as an error.
+    public typealias Budget = @Sendable (Duration) -> Duration
+
     /// A coarse stage, reported as the pass advances so the UI can narrate it.
     public enum Phase: Sendable, Equatable {
         /// Re-transcribing one track's saved audio.
@@ -30,16 +35,26 @@ public struct FinalPass: Sendable {
     private let diarizer: any Diarizer
     private let merger: TranscriptMerger
     private let makeTranscriber: MakeTranscriber
+    private let budget: Budget
+
+    /// Generous default watchdog: `4×` realtime, floored at a minute. The whole
+    /// final pass runs well under realtime in practice, so this only ever fires
+    /// on a true stall.
+    public static let defaultBudget: Budget = { audio in
+        max(.seconds(60), audio * 4)
+    }
 
     public init(
         reader: RecordingReader = RecordingReader(),
         diarizer: any Diarizer,
         merger: TranscriptMerger = TranscriptMerger(),
+        budget: @escaping Budget = FinalPass.defaultBudget,
         makeTranscriber: @escaping MakeTranscriber
     ) {
         self.reader = reader
         self.diarizer = diarizer
         self.merger = merger
+        self.budget = budget
         self.makeTranscriber = makeTranscriber
     }
 
@@ -79,28 +94,46 @@ public struct FinalPass: Sendable {
         return frames
     }
 
-    /// Batch-transcribe one track; an empty track yields no segments.
+    /// Batch-transcribe one track under the watchdog; an empty track yields no
+    /// segments. A stalled recognizer fails with ``TimeoutError`` rather than
+    /// hanging the pass.
     private func transcribe(
         _ source: CaptureSource,
         _ frames: [AudioFrame]
     ) async throws -> [TranscriptSegment] {
         guard !frames.isEmpty else { return [] }
-        var segments: [TranscriptSegment] = []
-        for try await segment in try await makeTranscriber(source).transcribe(Self.stream(frames)) {
-            segments.append(segment)
+        let make = makeTranscriber
+        return try await withTimeout(
+            budget(Self.duration(of: frames)),
+            label: "transcribe(\(source))"
+        ) {
+            var segments: [TranscriptSegment] = []
+            for try await segment in try await make(source).transcribe(Self.stream(frames)) {
+                segments.append(segment)
+            }
+            return segments
         }
-        return segments
     }
 
     /// Offline-diarize the system track into its final remote-speaker timeline
-    /// (the last snapshot the diarizer emits); an empty track yields none.
+    /// (the last snapshot the diarizer emits) under the watchdog; an empty track
+    /// yields none.
     private func diarize(_ frames: [AudioFrame]) async throws -> SpeakerTimeline {
         guard !frames.isEmpty else { return SpeakerTimeline() }
-        var timeline = SpeakerTimeline()
-        for await snapshot in try await diarizer.diarize(Self.stream(frames)) {
-            timeline = snapshot
+        let diarizer = diarizer
+        return try await withTimeout(budget(Self.duration(of: frames)), label: "diarize") {
+            var timeline = SpeakerTimeline()
+            for await snapshot in try await diarizer.diarize(Self.stream(frames)) {
+                timeline = snapshot
+            }
+            return timeline
         }
-        return timeline
+    }
+
+    /// Wall-clock span of an in-memory track: where its last frame ends.
+    private static func duration(of frames: [AudioFrame]) -> Duration {
+        guard let last = frames.last else { return .zero }
+        return last.startOffset + last.duration
     }
 
     /// Replay an in-memory frame buffer as the non-throwing stream the engines
