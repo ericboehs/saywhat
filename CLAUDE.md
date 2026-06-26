@@ -142,10 +142,17 @@ DESIGN.md  QUALITY.md  CLAUDE.md
 
 ## Status
 
-**Phase 0 (capture & durability) in progress.** Docs + tooling/CI are in place;
-the capture domain model + crash-safe durability core, the `AVAudioEngine`
-microphone adapter, and a minimal SwiftUI app target (committed vanilla
-`SayWhat.xcodeproj`) have landed. Still to come in Phase 0: the
-`ScreenCaptureKit` system-audio adapter and the `AVAssetWriter`-backed durable
-AAC writer. See [CHANGELOG.md](CHANGELOG.md) for what's shipped and DESIGN.md
-§14 for the build order.
+**Phase 0 (capture & durability) complete.** Docs + tooling/CI, the capture
+domain model + crash-safe durability core, both capture adapters (`AVAudioEngine`
+mic + `ScreenCaptureKit` system audio), the `AVAssetWriter`-backed durable AAC
+writer with rotating segments + crash recovery, a live input-level meter, and a
+minimal SwiftUI app target (committed vanilla `SayWhat.xcodeproj`) have landed. A
+Record press now produces a recoverable, **dual-track** recording on disk —
+verified end to end. Local dev builds are signed with a self-signed cert (wired
+via a gitignored `Config/Local.xcconfig`) so the App Sandbox is enforced and
+recordings land in the app container; see `Config/Local.xcconfig.example`.
+
+**Phase 1 (live transcript) is next** — the `Transcriber` protocol + Apple
+`SpeechTranscriber` per track, volatile→final, on screen. See
+[CHANGELOG.md](CHANGELOG.md) for what's shipped and DESIGN.md §14 for the build
+order.
