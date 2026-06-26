@@ -197,6 +197,31 @@ in the final pass; (c) WhisperKit prompt-biasing as an optional engine. v1 ships
 **ASR is behind a protocol** (`Transcriber`) so Parakeet streaming or WhisperKit
 can be swapped in per-context without touching the UI.
 
+### Live echo handling — mono-mix for display only
+
+A speaker's voice leaks from the laptop speakers into the mic, so running a
+recognizer per track makes the **same remote utterance transcribe twice** —
+once clean off the system track, once as echo off the mic. We tried two ways to
+fix this on the mic side and rejected both: acoustic echo cancellation
+(`setVoiceProcessingEnabled`) ducks system output, fails to pull mic audio
+unless the engine also renders output, and risks seizing the input device — the
+exact §4 hazard; and transcript-level dedupe (drop a mic line that fuzzy-matches
+a recent system line) flickers visibly — text appears, then retracts.
+
+What ships instead: for the **live transcript only**, sum the two 16 kHz tracks
+into one mono stream (`AudioMixer`) and run **one** recognizer over it. The echo
+and its source are the same sound at nearly the same time, so one recognizer
+hears one utterance — no dedupe heuristic, nothing ever retracted on screen.
+
+This does **not** violate the separate-tracks invariant (§4): capture and
+**storage stay fully dual-track**, so the final pass still diarizes off clean
+per-channel audio. Only the live *display* is mixed. The cost is no live speaker
+separation (low value in a 5–10 person call — you know what you said, and the
+final pass attributes the rest) and some accuracy loss on simultaneous
+double-talk. Real reference-based AEC (mic minus the system track as echo
+reference, e.g. SpeexDSP MDF) is the future *offline* path, behind an
+`EchoCanceller` protocol over the saved AAC — see §7.
+
 ---
 
 ## 6. Diarization & speaker identity
