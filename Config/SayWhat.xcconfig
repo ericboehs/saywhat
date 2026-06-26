@@ -25,6 +25,7 @@ SWIFT_EMIT_LOC_STRINGS = YES
 // Screen-Recording prompt with no Info.plist key.
 GENERATE_INFOPLIST_FILE = YES
 INFOPLIST_KEY_NSMicrophoneUsageDescription = SayWhat records your microphone to transcribe meetings on-device. Audio never leaves your Mac.
+INFOPLIST_KEY_NSSpeechRecognitionUsageDescription = SayWhat transcribes your meetings on-device. Speech is processed locally and never leaves your Mac.
 INFOPLIST_KEY_LSApplicationCategoryType = public.app-category.productivity
 INFOPLIST_KEY_NSHumanReadableCopyright = MIT-licensed. On-device only.
 

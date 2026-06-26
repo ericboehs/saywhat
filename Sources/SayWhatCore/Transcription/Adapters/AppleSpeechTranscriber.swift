@@ -16,6 +16,12 @@ import Speech
 /// This is a hardware/ML adapter (coverage-excluded): the pure contract it
 /// satisfies is exercised through ``Transcriber`` fakes, and its accuracy is a
 /// golden-file/WER concern, not a unit-test one. See DESIGN.md §5, QUALITY.md §6.
+/// Errors surfaced by ``AppleSpeechTranscriber``.
+public enum TranscriptionError: Error, Sendable, Equatable {
+    /// The user declined (or has not yet granted) speech-recognition access.
+    case speechPermissionDenied
+}
+
 public final class AppleSpeechTranscriber: Transcriber {
     public let source: CaptureSource
 
@@ -30,6 +36,8 @@ public final class AppleSpeechTranscriber: Transcriber {
     public func transcribe(
         _ frames: AsyncStream<AudioFrame>
     ) async throws -> AsyncThrowingStream<TranscriptSegment, Error> {
+        try await Self.requireAuthorization()
+
         let transcriber = SpeechTranscriber(
             locale: locale,
             transcriptionOptions: [],
@@ -74,6 +82,23 @@ public final class AppleSpeechTranscriber: Transcriber {
                 pump.cancel()
                 forward.cancel()
             }
+        }
+    }
+
+    /// Ensure the user has granted speech-recognition access, prompting once if
+    /// the status is undetermined. On-device transcription still goes through the
+    /// Speech privacy gate (`NSSpeechRecognitionUsageDescription`).
+    private static func requireAuthorization() async throws {
+        switch SFSpeechRecognizer.authorizationStatus() {
+        case .authorized:
+            return
+        case .notDetermined:
+            let status = await withCheckedContinuation { continuation in
+                SFSpeechRecognizer.requestAuthorization { continuation.resume(returning: $0) }
+            }
+            guard status == .authorized else { throw TranscriptionError.speechPermissionDenied }
+        default:
+            throw TranscriptionError.speechPermissionDenied
         }
     }
 
