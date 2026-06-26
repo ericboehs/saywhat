@@ -26,6 +26,12 @@ let package = Package(
             url: "https://github.com/FluidInference/FluidAudio.git",
             .upToNextMinor(from: "0.15.4")
         ),
+        // Local SQLite store (retention, persistent speaker voiceprints).
+        // On-device only; nothing here ever leaves the machine (DESIGN.md §9).
+        .package(
+            url: "https://github.com/groue/GRDB.swift.git",
+            from: "7.11.0"
+        ),
     ],
     targets: [
         // Pure, hardware-free core logic and shared value types. Engines
@@ -35,6 +41,7 @@ let package = Package(
             name: "SayWhatCore",
             dependencies: [
                 .product(name: "FluidAudio", package: "FluidAudio"),
+                .product(name: "GRDB", package: "GRDB.swift"),
             ],
             swiftSettings: swiftSettings
         ),
