@@ -5,14 +5,18 @@ coverage:
   status:
     project:
       default:
-        # We don't chase a high absolute number on an audio/ML app; just don't
-        # regress. ~70% target, 1% drop tolerance.
-        target: 70%
+        # The pure core (everything outside the coverage-ignored hardware/ML
+        # adapters below) sits at ~97% line coverage, so hold a high bar and
+        # don't regress. 1% drop tolerance absorbs measurement noise. The
+        # remaining gaps are AVFoundation/CoreMedia failure-injection guards in
+        # the durable writer that can't be triggered without brittle mocks.
+        target: 95%
         threshold: 1%
     patch:
       default:
-        # New/changed lines must be covered. This is the real gate.
-        target: 80%
+        # New/changed lines must be covered. This is the real gate. Adapter
+        # diffs are excluded via `ignore`, so this lands on testable logic.
+        target: 95%
         threshold: 0%
 
 comment:

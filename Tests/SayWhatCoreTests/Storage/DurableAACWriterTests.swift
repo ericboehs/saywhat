@@ -136,4 +136,30 @@ struct DurableAACWriterTests {
             try await writer.append(Self.frame(0.1, samples: 1600, at: .zero, source: .system))
         }
     }
+
+    @Test("an empty frame is a no-op — no segment is opened")
+    func emptyFrameIgnored() async throws {
+        let session = try Self.makeSession()
+        defer { try? FileManager.default.removeItem(at: session.directory) }
+
+        let writer = try session.writer(for: .microphone)
+        try await writer.append(Self.frame(0, samples: 0, at: .zero))
+        try await writer.finalize()
+
+        #expect((session.segments()[.microphone] ?? []).isEmpty)
+    }
+
+    @Test("a segment that can't be created surfaces a setup failure")
+    func segmentSetupFailure() async throws {
+        // Point the writer at a directory that doesn't exist, so AVAssetWriter
+        // can't create the segment file under it.
+        let missing = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("saywhat-missing-\(UUID().uuidString)", isDirectory: true)
+            .appendingPathComponent("nope", isDirectory: true)
+        let writer = try DurableAACWriter(directory: missing, source: .microphone)
+
+        await #expect(throws: StorageError.writerSetupFailed) {
+            try await writer.append(Self.frame(0.25, samples: 1600, at: .zero))
+        }
+    }
 }
