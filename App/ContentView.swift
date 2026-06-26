@@ -31,6 +31,12 @@ final class CaptureModel {
     /// The live transcript of the mixed mic+system audio, attributed by speaker.
     private(set) var transcript = LiveTranscript()
 
+    /// The authoritative transcript from the final pass, shown once a recording
+    /// has been re-transcribed and diarized at meeting end (nil until then).
+    private(set) var finalTranscript: Transcript?
+    /// Non-nil while the final pass runs, narrating its current stage.
+    private(set) var finalizeStatus: String?
+
     private(set) var sessionPath: String?
     private(set) var errorMessage: String?
 
@@ -39,6 +45,13 @@ final class CaptureModel {
     private let transcriber = AppleSpeechTranscriber(source: .microphone)
     private let diarizer: any Diarizer = SortformerLiveDiarizer()
     private var recording: Task<Void, Never>?
+
+    /// The batch final pass: Parakeet per track + offline pyannote, merged into
+    /// the authoritative transcript over the session's saved AAC (DESIGN.md §3).
+    private let finalPass = FinalPass(
+        diarizer: OfflinePyannoteDiarizer(),
+        makeTranscriber: { ParakeetTranscriber(source: $0) }
+    )
 
     // Per-segment speaker attribution. Energy envelopes of both tracks decide
     // you-vs-remote; the diarizer timeline names the remote speaker.
@@ -62,6 +75,8 @@ final class CaptureModel {
         systemSampleCount = 0
         systemLevel = 0
         transcript = LiveTranscript()
+        finalTranscript = nil
+        finalizeStatus = nil
         micEnergy = EnergyTrack()
         systemEnergy = EnergyTrack()
         remoteSpeakers = SpeakerTimeline()
@@ -116,9 +131,39 @@ final class CaptureModel {
                 try await micWriter.finalize()
                 try await systemWriter.finalize()
                 try session.markFinalized()
+
+                // Capture is fully durable and closed; now re-transcribe and
+                // diarize the saved audio into the authoritative transcript.
+                await self.runFinalPass(session)
             } catch {
                 self.errorMessage = String(describing: error)
             }
+        }
+    }
+
+    /// Run the batch final pass over a finalized session and surface the
+    /// authoritative transcript. Failures (e.g. a model download) surface as a
+    /// message and never affect the saved recording, which is already durable.
+    private func runFinalPass(_ session: RecordingSession) async {
+        finalizeStatus = Self.describe(.transcribing(.microphone))
+        do {
+            let transcript = try await finalPass.run(session) { phase in
+                Task { @MainActor in self.finalizeStatus = Self.describe(phase) }
+            }
+            finalTranscript = transcript
+        } catch {
+            errorMessage = "finalize: \(error)"
+        }
+        finalizeStatus = nil
+    }
+
+    /// A reader-facing description of a final-pass stage.
+    private static func describe(_ phase: FinalPass.Phase) -> String {
+        switch phase {
+        case .transcribing(.microphone): "Transcribing your audio…"
+        case .transcribing(.system): "Transcribing the meeting…"
+        case .diarizing: "Identifying speakers…"
+        case .merging: "Assembling transcript…"
         }
     }
 
@@ -300,131 +345,6 @@ struct TrackRow: View {
     }
 }
 
-/// The live transcript of the mixed audio, grouped into speaker turns. Committed
-/// (final) text lands in ``Block``s — consecutive finals from the same speaker
-/// merge into one paragraph — and the in-flight volatile guess trails as its own
-/// tentative block. One recognizer drives it, so text only ever appends; nothing
-/// already shown is retracted.
-struct LiveTranscript: Equatable {
-    /// One speaker's contiguous run of committed text.
-    struct Block: Equatable, Identifiable {
-        let id = UUID()
-        var label: SpeakerLabel
-        var text: String
-    }
-
-    private(set) var blocks: [Block] = []
-    /// The latest in-flight volatile guess (empty between utterances).
-    private(set) var volatile = ""
-    /// Best-guess speaker for the volatile tail.
-    private(set) var volatileLabel: SpeakerLabel = .you
-
-    var isEmpty: Bool {
-        blocks.isEmpty && volatile.isEmpty
-    }
-
-    /// Commit a final segment: extend the last block if the same speaker still
-    /// holds the floor, otherwise start a new one. Clears the volatile tail.
-    mutating func appendFinal(_ text: String, label: SpeakerLabel) {
-        volatile = ""
-        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return }
-        if var last = blocks.last, last.label == label {
-            last.text += " " + trimmed
-            blocks[blocks.count - 1] = last
-        } else {
-            blocks.append(Block(label: label, text: trimmed))
-        }
-    }
-
-    /// Replace the in-flight guess and its speaker.
-    mutating func setVolatile(_ text: String, label: SpeakerLabel) {
-        volatile = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        volatileLabel = label
-    }
-}
-
-extension SpeakerLabel {
-    /// Display name for the live view. Remote slots are 0-based; show them 1-based.
-    var displayName: String {
-        switch self {
-        case .you: "You"
-        case let .remote(slot): "Speaker \(slot + 1)"
-        }
-    }
-
-    /// A stable accent color per speaker so turns are scannable at a glance.
-    var tint: Color {
-        switch self {
-        case .you:
-            return Color.accentColor
-        case let .remote(slot):
-            let palette: [Color] = [.teal, .orange, .purple, .pink]
-            return palette[slot % palette.count]
-        }
-    }
-}
-
-/// One speaker turn: a colored name header above its text. The in-flight guess
-/// renders muted and italic so the reader can tell it from settled text.
-struct SpeakerBlock: View {
-    var label: SpeakerLabel
-    var text: String
-    var volatile: Bool = false
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 2) {
-            Text(label.displayName)
-                .font(.caption.bold())
-                .foregroundStyle(label.tint)
-            Text(text)
-                .foregroundStyle(volatile ? .secondary : .primary)
-                .italic(volatile)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .multilineTextAlignment(.leading)
-                .textSelection(.enabled)
-        }
-    }
-}
-
-/// The live transcript pane: a stack of per-speaker blocks with the live guess
-/// trailing as a tentative block. Auto-scrolls to the live edge.
-struct LiveTranscriptView: View {
-    var transcript: LiveTranscript
-    var active: Bool
-
-    private let liveEdge = "live-edge"
-
-    var body: some View {
-        ScrollViewReader { proxy in
-            ScrollView {
-                VStack(alignment: .leading, spacing: 12) {
-                    if transcript.isEmpty {
-                        Text(active ? "Listening…" : "—")
-                            .foregroundStyle(.tertiary)
-                    } else {
-                        ForEach(transcript.blocks) { block in
-                            SpeakerBlock(label: block.label, text: block.text)
-                        }
-                        if !transcript.volatile.isEmpty {
-                            SpeakerBlock(
-                                label: transcript.volatileLabel,
-                                text: transcript.volatile,
-                                volatile: true
-                            )
-                        }
-                    }
-                    Color.clear.frame(height: 1).id(liveEdge)
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-            }
-            .onChange(of: transcript) {
-                withAnimation { proxy.scrollTo(liveEdge, anchor: .bottom) }
-            }
-        }
-    }
-}
-
 struct ContentView: View {
     @State private var model = CaptureModel()
 
@@ -450,10 +370,22 @@ struct ContentView: View {
                 active: model.isRecording
             )
 
-            LiveTranscriptView(
-                transcript: model.transcript,
-                active: model.isRecording
-            )
+            Group {
+                if let status = model.finalizeStatus {
+                    VStack(spacing: 10) {
+                        ProgressView()
+                        Text(status).foregroundStyle(.secondary)
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else if let finalTranscript = model.finalTranscript, !model.isRecording {
+                    FinalTranscriptView(transcript: finalTranscript)
+                } else {
+                    LiveTranscriptView(
+                        transcript: model.transcript,
+                        active: model.isRecording
+                    )
+                }
+            }
             .frame(minHeight: 200)
 
             if let sessionPath = model.sessionPath {
@@ -476,6 +408,7 @@ struct ContentView: View {
             .buttonStyle(.borderedProminent)
             .controlSize(.large)
             .tint(model.isRecording ? .red : .accentColor)
+            .disabled(model.finalizeStatus != nil)
         }
         .padding(40)
         .frame(minWidth: 560, minHeight: 540)
