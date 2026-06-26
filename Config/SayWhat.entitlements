@@ -5,8 +5,13 @@
 	<!-- App Sandbox on: privacy posture. Recordings live in the app container. -->
 	<key>com.apple.security.app-sandbox</key>
 	<true/>
-	<!-- The only device entitlement we need in Phase 0: microphone capture. -->
+	<!-- Microphone capture. -->
 	<key>com.apple.security.device.audio-input</key>
+	<true/>
+	<!-- Outbound only: first-run ML model download (FluidAudio Sortformer/
+	     Parakeet from HuggingFace) and optional calendar lookup. No server, no
+	     telemetry, no audio/transcript ever leaves the machine. DESIGN.md §3. -->
+	<key>com.apple.security.network.client</key>
 	<true/>
 </dict>
 </plist>

@@ -9,6 +9,12 @@ import SwiftUI
 /// both tracks are summed through an ``AudioMixer`` into one
 /// ``AppleSpeechTranscriber`` — so the speaker echo transcribes once, with no
 /// dedupe and nothing retracted on screen. See DESIGN.md §5.
+///
+/// Each transcript segment is attributed to a speaker: the mic channel is *you*,
+/// and a ``Diarizer`` (FluidAudio Sortformer) runs on the **system track** to
+/// split the remote speakers. ``SpeakerLabeler`` combines the two — mic-vs-system
+/// energy over the segment's window decides you-vs-remote, then the diarizer's
+/// timeline names the remote slot. See DESIGN.md §6.
 @MainActor
 @Observable
 final class CaptureModel {
@@ -22,7 +28,7 @@ final class CaptureModel {
     private(set) var systemSampleCount = 0
     private(set) var systemLevel: Float = 0
 
-    /// The live transcript of the mixed mic+system audio.
+    /// The live transcript of the mixed mic+system audio, attributed by speaker.
     private(set) var transcript = LiveTranscript()
 
     private(set) var sessionPath: String?
@@ -31,7 +37,17 @@ final class CaptureModel {
     private let microphone = MicrophoneCapture()
     private let system = SystemAudioCapture()
     private let transcriber = AppleSpeechTranscriber(source: .microphone)
+    private let diarizer: any Diarizer = SortformerLiveDiarizer()
     private var recording: Task<Void, Never>?
+
+    // Per-segment speaker attribution. Energy envelopes of both tracks decide
+    // you-vs-remote; the diarizer timeline names the remote speaker.
+    private let labeler = SpeakerLabeler()
+    private var micEnergy = EnergyTrack()
+    private var systemEnergy = EnergyTrack()
+    private var remoteSpeakers = SpeakerTimeline()
+    /// End of the latest audio seen, for attributing range-less volatile guesses.
+    private var latestTime: Duration = .zero
 
     func toggle() {
         if isRecording { stop() } else { start() }
@@ -46,6 +62,10 @@ final class CaptureModel {
         systemSampleCount = 0
         systemLevel = 0
         transcript = LiveTranscript()
+        micEnergy = EnergyTrack()
+        systemEnergy = EnergyTrack()
+        remoteSpeakers = SpeakerTimeline()
+        latestTime = .zero
         errorMessage = nil
 
         let session = RecordingSession(directory: Self.newSessionDirectory())
@@ -58,21 +78,26 @@ final class CaptureModel {
                 let systemWriter = try session.writer(for: .system)
 
                 // One mixer sums both tracks for the single live transcriber;
-                // claim its output stream before the pumps start feeding it.
+                // claim its output stream before the pumps start feeding it. A
+                // separate stream fans the system track to the diarizer (remote
+                // speaker splitting runs on the system track only — §6).
                 let mixer = AudioMixer()
                 let mixed = await mixer.output()
+                let (remoteAudio, remoteFeed) = AsyncStream<AudioFrame>.makeStream()
 
-                // Transcribe the mix while both tracks are captured, metered,
-                // stored, and fed into the mixer concurrently. Each loop ends
-                // when its source finishes (i.e. after stop()).
+                // Transcribe the mix and diarize the system track while both
+                // tracks are captured, metered, stored, mixed, and (system only)
+                // fed to the diarizer. Each loop ends when its source finishes.
                 await withTaskGroup(of: Void.self) { group in
                     group.addTask { await self.transcribeMixed(mixed) }
+                    group.addTask { await self.diarizeRemote(remoteAudio) }
                     group.addTask {
                         await self.pump(
                             microphone,
                             into: micWriter,
                             source: .microphone,
-                            mixer: mixer
+                            mixer: mixer,
+                            diarizerFeed: nil
                         )
                     }
                     group.addTask {
@@ -80,7 +105,8 @@ final class CaptureModel {
                             system,
                             into: systemWriter,
                             source: .system,
-                            mixer: mixer
+                            mixer: mixer,
+                            diarizerFeed: remoteFeed
                         )
                     }
                 }
@@ -109,21 +135,24 @@ final class CaptureModel {
     }
 
     /// Meter, persist, and mix one track's frames until its stream finishes.
-    /// Each frame fans out to the durable writer (storage) and the shared
-    /// ``AudioMixer`` (live transcript); a write failure surfaces its message
-    /// without tearing down capture or the other track. On end, the track is
-    /// marked finished on the mixer so the mixed stream can wind down.
+    /// Each frame fans out to the durable writer (storage), the shared
+    /// ``AudioMixer`` (live transcript), and — for the system track — the
+    /// diarizer feed (remote-speaker splitting). A write failure surfaces its
+    /// message without tearing down capture or the other track. On end, the
+    /// track is marked finished on the mixer and the diarizer feed is closed.
     private func pump(
         _ capture: any AudioCapture,
         into writer: DurableAACWriter,
         source: CaptureSource,
-        mixer: AudioMixer
+        mixer: AudioMixer,
+        diarizerFeed: AsyncStream<AudioFrame>.Continuation?
     ) async {
         do {
             let frames = try await capture.start()
             for await frame in frames {
                 update(source, with: frame)
                 await mixer.feed(source, frame.samples)
+                diarizerFeed?.yield(frame)
                 do {
                     try await writer.append(frame)
                 } catch {
@@ -135,20 +164,54 @@ final class CaptureModel {
         } catch {
             errorMessage = "\(source.rawValue): \(error)"
         }
+        diarizerFeed?.finish()
         await mixer.finish(source)
     }
 
-    /// Drain the mixed transcriber's segments into the live transcript.
-    /// Transcription failures (e.g. denied speech permission) surface as a
-    /// message and never affect capture or storage.
+    /// Drain the mixed transcriber's segments into the live transcript,
+    /// attributing each to a speaker. Transcription failures (e.g. denied speech
+    /// permission) surface as a message and never affect capture or storage.
     private func transcribeMixed(_ frames: AsyncStream<AudioFrame>) async {
         do {
             for try await segment in try await transcriber.transcribe(frames) {
-                transcript.apply(segment)
+                let label = labeler.label(
+                    segment: attributionWindow(for: segment),
+                    mic: micEnergy,
+                    system: systemEnergy,
+                    remoteSpeakers: remoteSpeakers
+                )
+                if segment.isFinal {
+                    transcript.appendFinal(segment.text, label: label)
+                } else {
+                    transcript.setVolatile(segment.text, label: label)
+                }
             }
         } catch {
             errorMessage = "transcribe: \(error)"
         }
+    }
+
+    /// Keep the latest remote-speaker timeline as the diarizer refines it.
+    /// Diarization failures (e.g. model download) surface as a message and never
+    /// affect capture, storage, or transcription — the transcript just loses
+    /// remote-speaker names and falls back to "Speaker 1".
+    private func diarizeRemote(_ frames: AsyncStream<AudioFrame>) async {
+        do {
+            for await timeline in try await diarizer.diarize(frames) {
+                remoteSpeakers = timeline
+            }
+        } catch {
+            errorMessage = "diarize: \(error)"
+        }
+    }
+
+    /// The window used to attribute a segment. Final segments carry a real time
+    /// range; a range-less volatile guess is attributed by the last second of
+    /// audio (who is talking right now).
+    private func attributionWindow(for segment: TranscriptSegment) -> Range<Duration> {
+        if segment.end > segment.start { return segment.range }
+        let start = latestTime > .seconds(1) ? latestTime - .seconds(1) : .zero
+        return start ..< Swift.max(latestTime, start)
     }
 
     private func update(_ source: CaptureSource, with frame: AudioFrame) {
@@ -157,11 +220,14 @@ final class CaptureModel {
             micFrameCount += 1
             micSampleCount += frame.samples.count
             micLevel = Self.smooth(micLevel, toward: frame.meterLevel())
+            micEnergy.record(frame)
         case .system:
             systemFrameCount += 1
             systemSampleCount += frame.samples.count
             systemLevel = Self.smooth(systemLevel, toward: frame.meterLevel())
+            systemEnergy.record(frame)
         }
+        latestTime = Swift.max(latestTime, frame.startOffset + frame.duration)
     }
 
     /// A timestamped session directory under our bundle-namespaced Application
@@ -234,36 +300,95 @@ struct TrackRow: View {
     }
 }
 
-/// The live transcript of the mixed audio: a single growing stream of committed
-/// (final) text with the in-flight volatile guess trailing in muted italic.
-/// Because one recognizer drives it, text only ever appends — a volatile tail
-/// firms up into final text and is replaced by the next guess; nothing already
-/// shown is retracted.
+/// The live transcript of the mixed audio, grouped into speaker turns. Committed
+/// (final) text lands in ``Block``s — consecutive finals from the same speaker
+/// merge into one paragraph — and the in-flight volatile guess trails as its own
+/// tentative block. One recognizer drives it, so text only ever appends; nothing
+/// already shown is retracted.
 struct LiveTranscript: Equatable {
-    /// Committed final text, accumulated in arrival order.
-    private(set) var finals: [String] = []
-    /// The latest in-flight volatile guess (empty between utterances).
-    private(set) var volatile = ""
-
-    var isEmpty: Bool {
-        finals.isEmpty && volatile.isEmpty
+    /// One speaker's contiguous run of committed text.
+    struct Block: Equatable, Identifiable {
+        let id = UUID()
+        var label: SpeakerLabel
+        var text: String
     }
 
-    /// Fold one recognizer result in: a final commits and clears the volatile
-    /// tail; a volatile just replaces the current tail.
-    mutating func apply(_ segment: TranscriptSegment) {
-        let text = segment.text.trimmingCharacters(in: .whitespacesAndNewlines)
-        if segment.isFinal {
-            if !text.isEmpty { finals.append(text) }
-            volatile = ""
+    private(set) var blocks: [Block] = []
+    /// The latest in-flight volatile guess (empty between utterances).
+    private(set) var volatile = ""
+    /// Best-guess speaker for the volatile tail.
+    private(set) var volatileLabel: SpeakerLabel = .you
+
+    var isEmpty: Bool {
+        blocks.isEmpty && volatile.isEmpty
+    }
+
+    /// Commit a final segment: extend the last block if the same speaker still
+    /// holds the floor, otherwise start a new one. Clears the volatile tail.
+    mutating func appendFinal(_ text: String, label: SpeakerLabel) {
+        volatile = ""
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        if var last = blocks.last, last.label == label {
+            last.text += " " + trimmed
+            blocks[blocks.count - 1] = last
         } else {
-            volatile = text
+            blocks.append(Block(label: label, text: trimmed))
+        }
+    }
+
+    /// Replace the in-flight guess and its speaker.
+    mutating func setVolatile(_ text: String, label: SpeakerLabel) {
+        volatile = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        volatileLabel = label
+    }
+}
+
+extension SpeakerLabel {
+    /// Display name for the live view. Remote slots are 0-based; show them 1-based.
+    var displayName: String {
+        switch self {
+        case .you: "You"
+        case let .remote(slot): "Speaker \(slot + 1)"
+        }
+    }
+
+    /// A stable accent color per speaker so turns are scannable at a glance.
+    var tint: Color {
+        switch self {
+        case .you:
+            return Color.accentColor
+        case let .remote(slot):
+            let palette: [Color] = [.teal, .orange, .purple, .pink]
+            return palette[slot % palette.count]
         }
     }
 }
 
-/// The live transcript pane: committed text in the primary color with the live
-/// volatile guess trailing in muted italic. Auto-scrolls to the live edge.
+/// One speaker turn: a colored name header above its text. The in-flight guess
+/// renders muted and italic so the reader can tell it from settled text.
+struct SpeakerBlock: View {
+    var label: SpeakerLabel
+    var text: String
+    var volatile: Bool = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(label.displayName)
+                .font(.caption.bold())
+                .foregroundStyle(label.tint)
+            Text(text)
+                .foregroundStyle(volatile ? .secondary : .primary)
+                .italic(volatile)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .multilineTextAlignment(.leading)
+                .textSelection(.enabled)
+        }
+    }
+}
+
+/// The live transcript pane: a stack of per-speaker blocks with the live guess
+/// trailing as a tentative block. Auto-scrolls to the live edge.
 struct LiveTranscriptView: View {
     var transcript: LiveTranscript
     var active: Bool
@@ -273,37 +398,30 @@ struct LiveTranscriptView: View {
     var body: some View {
         ScrollViewReader { proxy in
             ScrollView {
-                Group {
+                VStack(alignment: .leading, spacing: 12) {
                     if transcript.isEmpty {
                         Text(active ? "Listening…" : "—")
                             .foregroundStyle(.tertiary)
                     } else {
-                        Text(styled)
+                        ForEach(transcript.blocks) { block in
+                            SpeakerBlock(label: block.label, text: block.text)
+                        }
+                        if !transcript.volatile.isEmpty {
+                            SpeakerBlock(
+                                label: transcript.volatileLabel,
+                                text: transcript.volatile,
+                                volatile: true
+                            )
+                        }
                     }
+                    Color.clear.frame(height: 1).id(liveEdge)
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .multilineTextAlignment(.leading)
-                .textSelection(.enabled)
-                Color.clear.frame(height: 1).id(liveEdge)
             }
             .onChange(of: transcript) {
                 withAnimation { proxy.scrollTo(liveEdge, anchor: .bottom) }
             }
         }
-    }
-
-    /// Committed text as flowing prose, with the still-volatile guess appended
-    /// in muted italic so the reader can tell settled text from the live edge.
-    private var styled: AttributedString {
-        var result = AttributedString(transcript.finals.joined(separator: " "))
-        if !transcript.volatile.isEmpty {
-            if !result.characters.isEmpty { result += AttributedString(" ") }
-            var tail = AttributedString(transcript.volatile)
-            tail.foregroundColor = .secondary
-            tail.font = .body.italic()
-            result += tail
-        }
-        return result
     }
 }
 
