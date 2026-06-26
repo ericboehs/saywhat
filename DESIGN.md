@@ -433,8 +433,9 @@ workflow and ownership:
 
 ## 14. Build order
 
-- **Phase 0 — Capture & durability.** SwiftUI scaffold; dual-track capture (mic
-  + system) → continuous AAC to disk. Prove crash-safe recording first.
+- **Phase 0 — Capture & durability. ✓ Done.** SwiftUI scaffold; dual-track
+  capture (mic + system) → continuous AAC to disk. Crash-safe recording proven
+  end to end; local dev builds signed/sandboxed via a self-signed cert.
 - **Phase 1 — Live transcript.** Apple SpeechTranscriber per track, on screen,
   volatile→final. The thing you want to *read*.
 - **Phase 2 — Live diarization + enrollment.** FluidAudio Sortformer labels +
