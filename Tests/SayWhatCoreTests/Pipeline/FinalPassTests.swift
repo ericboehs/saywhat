@@ -30,6 +30,25 @@ private struct FakeTranscriber: Transcriber {
     }
 }
 
+/// A ``Transcriber`` that drains its input and then never finishes — stands in
+/// for a wedged engine so the watchdog has something to trip on.
+private struct HangingTranscriber: Transcriber {
+    let source: CaptureSource
+
+    func transcribe(
+        _ frames: AsyncStream<AudioFrame>
+    ) async throws -> AsyncThrowingStream<TranscriptSegment, Error> {
+        AsyncThrowingStream { continuation in
+            let task = Task {
+                for await _ in frames {}
+                try? await Task.sleep(for: .seconds(3600))
+                continuation.finish()
+            }
+            continuation.onTermination = { _ in task.cancel() }
+        }
+    }
+}
+
 /// A model-free ``Diarizer`` that drains its input and emits one canned timeline.
 private struct FakeDiarizer: Diarizer {
     let timeline: SpeakerTimeline
@@ -143,6 +162,24 @@ struct FinalPassTests {
             .diarizing,
             .merging,
         ])
+    }
+
+    @Test("a wedged transcriber trips the watchdog instead of hanging the pass")
+    func transcriberTimeout() async throws {
+        let session = makeSession()
+        try session.createDirectory()
+        try await writeTrack(.microphone, in: session, seconds: 1)
+        defer { try? FileManager.default.removeItem(at: session.directory) }
+
+        let pass = FinalPass(
+            diarizer: FakeDiarizer(timeline: SpeakerTimeline()),
+            budget: { _ in .milliseconds(50) },
+            makeTranscriber: { HangingTranscriber(source: $0) }
+        )
+
+        await #expect(throws: TimeoutError(label: "transcribe(microphone)")) {
+            _ = try await pass.run(session)
+        }
     }
 
     @Test("a session with no system track still produces the mic transcript")
