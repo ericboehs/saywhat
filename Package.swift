@@ -18,12 +18,24 @@ let package = Package(
     products: [
         .library(name: "SayWhatCore", targets: ["SayWhatCore"]),
     ],
+    dependencies: [
+        // Live + final diarization (Sortformer / pyannote) and batch Parakeet
+        // ASR. Apache-2.0; the Sortformer model is NVIDIA Open Model License —
+        // note for commercial use (CLAUDE.md). Models download on first use.
+        .package(
+            url: "https://github.com/FluidInference/FluidAudio.git",
+            .upToNextMinor(from: "0.15.4")
+        ),
+    ],
     targets: [
         // Pure, hardware-free core logic and shared value types. Engines
         // (capture, transcription, diarization, summarization) land here behind
         // protocols per DESIGN.md §14; this is the unit-testable heart.
         .target(
             name: "SayWhatCore",
+            dependencies: [
+                .product(name: "FluidAudio", package: "FluidAudio"),
+            ],
             swiftSettings: swiftSettings
         ),
         .testTarget(
