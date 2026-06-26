@@ -38,3 +38,9 @@ ENABLE_USER_SCRIPT_SANDBOXING = YES
 ALWAYS_SEARCH_USER_PATHS = NO
 LD_RUNPATH_SEARCH_PATHS = $(inherited) @executable_path/../Frameworks
 COMBINE_HIDPI_IMAGES = YES
+
+// Per-developer signing overrides (untracked). Copy Local.xcconfig.example to
+// Local.xcconfig and set an identity to get a *signed*, sandbox-enforced build
+// without an Apple Developer account. Optional — absent, the defaults above
+// apply (pass CODE_SIGNING_ALLOWED=NO for an unsigned local build).
+#include? "Local.xcconfig"

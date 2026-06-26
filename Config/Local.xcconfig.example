@@ -1,0 +1,26 @@
+// Per-developer signing overrides. Copy this file to `Local.xcconfig` (which is
+// gitignored) and uncomment one block. SayWhat.xcconfig pulls it in via
+// `#include? "Local.xcconfig"`, so your personal team/identity never lands in
+// the committed project.
+//
+// Without a Local.xcconfig, the committed defaults (Automatic signing) apply;
+// pass CODE_SIGNING_ALLOWED=NO on the xcodebuild command line for a quick
+// unsigned build (the sandbox is then NOT enforced — recordings land in the
+// real ~/Library, not a container).
+
+// --- Option A: self-signed local identity (no Apple account, sandbox enforced) ---
+// Create a code-signing cert named e.g. "SayWhat Dev" (Keychain Access ›
+// Certificate Assistant › Create a Certificate › Code Signing), then:
+// CODE_SIGN_STYLE = Manual
+// CODE_SIGN_IDENTITY = SayWhat Dev
+// PROVISIONING_PROFILE_SPECIFIER =
+// DEVELOPMENT_TEAM =
+// CODE_SIGNING_REQUIRED = YES
+// CODE_SIGNING_ALLOWED = YES
+// // Required with a self-signed identity: Hardened Runtime's library validation
+// // rejects the Debug build's dylib (no Team ID). The App Sandbox stays enforced.
+// ENABLE_HARDENED_RUNTIME = NO
+
+// --- Option B: an Apple Developer team (enables notarize/distribute) ---
+// CODE_SIGN_STYLE = Automatic
+// DEVELOPMENT_TEAM = XXXXXXXXXX
