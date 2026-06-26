@@ -232,6 +232,9 @@ struct ContentView: View {
                 model.toggle()
             }
             .keyboardShortcut(.defaultAction)
+            .buttonStyle(.borderedProminent)
+            .controlSize(.large)
+            .tint(model.isRecording ? .red : .accentColor)
         }
         .padding(40)
         .frame(minWidth: 360, minHeight: 320)
