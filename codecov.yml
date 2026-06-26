@@ -26,5 +26,6 @@ ignore:
   - "**/*+Preview.swift"
   - "**/Preview Content/**"
   - "**/Capture/Adapters/**"      # AVAudioEngine / ScreenCaptureKit hardware adapters
+  - "**/Transcription/Adapters/**" # SpeechAnalyzer / on-device ASR model adapters
   - "**/*Adapter.swift"
   - "**/*.generated.swift"
