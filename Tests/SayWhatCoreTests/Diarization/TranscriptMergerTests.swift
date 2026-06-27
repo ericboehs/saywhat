@@ -192,4 +192,34 @@ struct TranscriptMergerTests {
         )
         #expect(result.duration == .seconds(7))
     }
+
+    @Test("threads per-word timings through, concatenating them across a coalesced block")
+    func threadsWordTimings() {
+        let first = TranscriptSegment(
+            source: .microphone,
+            text: "hello there",
+            range: .seconds(0) ..< .seconds(1),
+            isFinal: true,
+            words: [
+                WordTiming(text: "hello", range: .seconds(0) ..< .milliseconds(500)),
+                WordTiming(text: "there", range: .milliseconds(500) ..< .seconds(1)),
+            ]
+        )
+        let second = TranscriptSegment(
+            source: .microphone,
+            text: "friend",
+            range: .seconds(1) ..< .seconds(2),
+            isFinal: true,
+            words: [WordTiming(text: "friend", range: .seconds(1) ..< .seconds(2))]
+        )
+        let result = TranscriptMerger().merge(
+            mic: [first, second],
+            system: [],
+            remoteSpeakers: SpeakerTimeline()
+        )
+
+        #expect(result.utterances.count == 1)
+        #expect(result.utterances.first?.words.map(\.text) == ["hello", "there", "friend"])
+        #expect(result.utterances.first?.words.last?.range == .seconds(1) ..< .seconds(2))
+    }
 }

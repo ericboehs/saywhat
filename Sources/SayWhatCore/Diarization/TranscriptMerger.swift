@@ -66,13 +66,15 @@ public struct TranscriptMerger: Sendable {
             // which would otherwise render as an empty, mislabeled speaker turn.
             guard text.contains(where: { $0.isLetter || $0.isNumber }) else { continue }
             if let last = utterances.last, last.speaker == label {
-                // Same speaker still holds the floor — extend their block.
+                // Same speaker still holds the floor — extend their block,
+                // concatenating the word timings in spoken order.
                 utterances[utterances.count - 1] = Transcript.Utterance(
                     id: last.id,
                     speaker: label,
                     speakerName: last.speakerName,
                     text: last.text + " " + text,
-                    range: last.start ..< Swift.max(last.end, entry.segment.end)
+                    range: last.start ..< Swift.max(last.end, entry.segment.end),
+                    words: last.words + entry.segment.words
                 )
             } else {
                 utterances.append(Transcript.Utterance(
@@ -80,7 +82,8 @@ public struct TranscriptMerger: Sendable {
                     speaker: label,
                     speakerName: entry.name,
                     text: text,
-                    range: entry.segment.range
+                    range: entry.segment.range,
+                    words: entry.segment.words
                 ))
             }
         }
