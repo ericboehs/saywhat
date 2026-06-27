@@ -53,6 +53,48 @@ struct TranscriptMergerTests {
         #expect(result.utterances.map(\.speaker) == [.remote(0), .remote(1)])
     }
 
+    @Test("splits a single system segment across remote speakers by word time")
+    func splitsRemoteSegmentBySpeaker() {
+        // One ASR segment, but a second speaker interjects mid-way: speaker 0 talks
+        // 0–2s, speaker 1 cuts in 2–3s, speaker 0 resumes 3–4s. The segment's
+        // overall-dominant speaker would swallow the interjection; per-word slotting
+        // must break it into three turns (the user's "I think that would help, yeah").
+        let system = [
+            TranscriptSegment(
+                source: .system,
+                text: "the point is proven I think that would help but yeah",
+                range: .seconds(0) ..< .seconds(4),
+                isFinal: true,
+                words: [
+                    WordTiming(text: "the", range: .seconds(0) ..< .milliseconds(500)),
+                    WordTiming(text: "point", range: .milliseconds(500) ..< .seconds(1)),
+                    WordTiming(text: "is", range: .seconds(1) ..< .milliseconds(1500)),
+                    WordTiming(text: "proven", range: .milliseconds(1500) ..< .seconds(2)),
+                    WordTiming(text: "I", range: .seconds(2) ..< .milliseconds(2300)),
+                    WordTiming(text: "think", range: .milliseconds(2300) ..< .milliseconds(2600)),
+                    WordTiming(text: "that", range: .milliseconds(2600) ..< .milliseconds(2800)),
+                    WordTiming(text: "would", range: .milliseconds(2800) ..< .milliseconds(2900)),
+                    WordTiming(text: "help", range: .milliseconds(2900) ..< .seconds(3)),
+                    WordTiming(text: "but", range: .seconds(3) ..< .milliseconds(3500)),
+                    WordTiming(text: "yeah", range: .milliseconds(3500) ..< .seconds(4)),
+                ]
+            ),
+        ]
+        let timeline = SpeakerTimeline(turns: [
+            SpeakerTurn(speaker: 0, range: .seconds(0) ..< .seconds(2)),
+            SpeakerTurn(speaker: 1, range: .seconds(2) ..< .seconds(3)),
+            SpeakerTurn(speaker: 0, range: .seconds(3) ..< .seconds(4)),
+        ])
+        let result = TranscriptMerger().merge(mic: [], system: system, remoteSpeakers: timeline)
+
+        #expect(result.utterances.map(\.speaker) == [.remote(0), .remote(1), .remote(0)])
+        #expect(result.utterances.map(\.text) == [
+            "the point is proven",
+            "I think that would help",
+            "but yeah",
+        ])
+    }
+
     @Test("tags each remote slot with its resolved persistent identity")
     func appliesResolvedNames() {
         let system = [
