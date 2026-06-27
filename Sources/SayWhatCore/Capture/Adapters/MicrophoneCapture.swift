@@ -1,4 +1,5 @@
 import AVFoundation
+import CoreAudio
 import Foundation
 import os
 import Synchronization
@@ -31,6 +32,15 @@ public enum CaptureError: Error, Sendable, Equatable {
 /// for that notification, re-reads the new hardware format, rebuilds the
 /// resampler, reinstalls the tap, and restarts the engine — keeping the same
 /// stream and durable writer alive across the switch.
+///
+/// **Following the default input.** Picking a different input in System Settings
+/// is *not* covered by the above: `AVAudioEngine` binds `inputNode` to the
+/// default device at engine-creation time and never repoints it, and the switch
+/// often posts no `AVAudioEngineConfigurationChange` at all. So we also register
+/// a CoreAudio listener on `kAudioHardwarePropertyDefaultInputDevice` to drive
+/// ``reconfigure()``, and ``installTapAndStart()`` explicitly sets the input
+/// node's device to the current default on every (re)install — so the mic track
+/// follows the user's chosen input mid-recording.
 ///
 /// **Threading.** The tap block runs on Core Audio's real-time render thread.
 /// It does no allocation-heavy or blocking work beyond the resample and a
@@ -70,6 +80,37 @@ public final class MicrophoneCapture: AudioCapture, @unchecked Sendable {
         queue.name = "com.boehs.saywhat.mic-reconfigure"
         return queue
     }()
+
+    /// The CoreAudio default-input-device listener block and the serial queue it
+    /// runs on, both removed in ``stop()``. Lets the mic follow the input the user
+    /// selects in System Settings, which `AVAudioEngineConfigurationChange` doesn't
+    /// reliably report.
+    private var defaultDeviceListener: AudioObjectPropertyListenerBlock?
+    private let deviceQueue = DispatchQueue(label: "com.boehs.saywhat.mic-default-device")
+
+    /// CoreAudio address of the system-wide default input device. Computed (a
+    /// fresh value each access) so there's no shared mutable static to reason about
+    /// under strict concurrency; callers take `&` of their own local copy.
+    private static var defaultInputAddress: AudioObjectPropertyAddress {
+        AudioObjectPropertyAddress(
+            mSelector: kAudioHardwarePropertyDefaultInputDevice,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+    }
+
+    /// The current system default input device, or nil if CoreAudio won't report
+    /// one (e.g. no input hardware present).
+    private static func defaultInputDevice() -> AudioDeviceID? {
+        var address = defaultInputAddress
+        var deviceID = AudioDeviceID(0)
+        var size = UInt32(MemoryLayout<AudioDeviceID>.size)
+        let status = AudioObjectGetPropertyData(
+            AudioObjectID(kAudioObjectSystemObject), &address, 0, nil, &size, &deviceID
+        )
+        guard status == noErr, deviceID != kAudioObjectUnknown else { return nil }
+        return deviceID
+    }
 
     /// Frames per tap buffer. ~85 ms at 48 kHz — small enough for a responsive
     /// live transcript, large enough to keep render-thread overhead negligible.
@@ -117,6 +158,17 @@ public final class MicrophoneCapture: AudioCapture, @unchecked Sendable {
                 queue: configQueue
             ) { [weak self] _ in self?.reconfigure() }
 
+            // Follow the default input when the user changes it in System Settings,
+            // which the notification above doesn't reliably cover.
+            var address = Self.defaultInputAddress
+            let listener: AudioObjectPropertyListenerBlock = { [weak self] _, _ in
+                self?.reconfigure()
+            }
+            defaultDeviceListener = listener
+            AudioObjectAddPropertyListenerBlock(
+                AudioObjectID(kAudioObjectSystemObject), &address, deviceQueue, listener
+            )
+
             Self.log.info("started")
             return stream
         }
@@ -127,6 +179,19 @@ public final class MicrophoneCapture: AudioCapture, @unchecked Sendable {
     /// `continuation`; shared by the initial ``start()`` and ``reconfigure()``.
     private func installTapAndStart() throws {
         let input = engine.inputNode
+        // Point the input node at the current default device. AVAudioEngine binds
+        // it once at creation and won't follow a System Settings change on its own,
+        // so set it each (re)install; skip the no-op when it already matches.
+        if let device = Self.defaultInputDevice(), input.auAudioUnit.deviceID != device {
+            do {
+                try input.auAudioUnit.setDeviceID(device)
+                Self.log.info("mic input device set to \(device)")
+            } catch {
+                Self.log.error(
+                    "could not set mic input device: \(error.localizedDescription, privacy: .public)"
+                )
+            }
+        }
         let hardwareFormat = input.inputFormat(forBus: 0)
         guard hardwareFormat.sampleRate > 0 else {
             Self.log.error("no usable input device (hardware sample rate is 0)")
@@ -184,6 +249,16 @@ public final class MicrophoneCapture: AudioCapture, @unchecked Sendable {
             if let configObserver {
                 NotificationCenter.default.removeObserver(configObserver)
                 self.configObserver = nil
+            }
+            if let defaultDeviceListener {
+                var address = Self.defaultInputAddress
+                AudioObjectRemovePropertyListenerBlock(
+                    AudioObjectID(kAudioObjectSystemObject),
+                    &address,
+                    deviceQueue,
+                    defaultDeviceListener
+                )
+                self.defaultDeviceListener = nil
             }
             engine.inputNode.removeTap(onBus: 0)
             if engine.isRunning { engine.stop() }
