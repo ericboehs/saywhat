@@ -61,14 +61,16 @@ public struct ParakeetSegmentBuilder: Sendable {
 
         func flush() {
             guard let first = group.first, let last = group.last else { return }
-            let words = Self.detokenize(group)
+            let text = Self.detokenize(group)
+            let words = Self.words(group, base: base)
             group.removeAll(keepingCapacity: true)
-            guard !words.isEmpty else { return }
+            guard !text.isEmpty else { return }
             segments.append(TranscriptSegment(
                 source: source,
-                text: words,
+                text: text,
                 range: base + first.start ..< base + last.end,
-                isFinal: true
+                isFinal: true,
+                words: words
             ))
         }
 
@@ -90,5 +92,38 @@ public struct ParakeetSegmentBuilder: Sendable {
             text += token.text.replacingOccurrences(of: "\u{2581}", with: " ")
         }
         return text.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// Group tokens into per-word ``WordTiming``s for karaoke-style playback
+    /// highlighting. A `▁`-prefixed token starts a new word; trailing tokens (e.g.
+    /// `▁play`, `ing`) fold into it. Each word spans from its first token's start
+    /// to its last token's end, offset by `base` onto the session timeline.
+    private static func words(_ tokens: [TimedToken], base: Duration) -> [WordTiming] {
+        var words: [WordTiming] = []
+        var text = ""
+        var start: Duration = .zero
+        var end: Duration = .zero
+
+        func flush() {
+            let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !trimmed.isEmpty {
+                words.append(WordTiming(text: trimmed, range: base + start ..< base + end))
+            }
+            text = ""
+        }
+
+        for token in tokens {
+            let piece = token.text.replacingOccurrences(of: "\u{2581}", with: "")
+            if token.text.hasPrefix("\u{2581}"), !text.isEmpty {
+                flush()
+            }
+            if text.isEmpty {
+                start = token.start
+            }
+            text += piece
+            end = token.end
+        }
+        flush()
+        return words
     }
 }
