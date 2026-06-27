@@ -131,7 +131,7 @@ struct FinalPassTests {
             }
         )
 
-        let transcript = try await pass.run(session)
+        let transcript = try await pass.run(session).transcript
 
         #expect(transcript.utterances.map(\.speaker) == [.you, .remote(1)])
         #expect(transcript.utterances.map(\.text) == ["hello there", "hi back"])
@@ -196,7 +196,7 @@ struct FinalPassTests {
             }
         )
 
-        let transcript = try await pass.run(session)
+        let transcript = try await pass.run(session).transcript
 
         #expect(transcript.utterances.map(\.speaker) == [.you])
         #expect(transcript.utterances.map(\.text) == ["solo"])
@@ -229,11 +229,15 @@ struct FinalPassTests {
             }
         )
 
-        let transcript = try await pass.run(session)
+        let outcome = try await pass.run(session)
 
-        #expect(transcript.utterances.map(\.speakerName) == ["Eric", "Speaker 1"])
+        #expect(outcome.transcript.utterances.map(\.speakerName) == ["Eric", "Speaker 1"])
         // The newcomer is persisted so the same voice is recognized next time.
         #expect(try store.all().map(\.name).sorted() == ["Eric", "Speaker 1"])
+        // Each remote slot surfaces the voiceprint it resolved to, so the UI can
+        // target the right row for a rename.
+        #expect(outcome.speakers[0]?.name == "Eric")
+        #expect(outcome.speakers[1]?.name == "Speaker 1")
     }
 
     @Test("a diarizer that surfaces no embeddings leaves identities unresolved")
@@ -260,7 +264,7 @@ struct FinalPassTests {
             }
         )
 
-        let transcript = try await pass.run(session)
+        let transcript = try await pass.run(session).transcript
 
         #expect(transcript.utterances.first?.speakerName == nil)
     }

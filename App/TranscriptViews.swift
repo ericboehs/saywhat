@@ -77,6 +77,12 @@ extension SpeakerLabel {
         }
     }
 
+    /// The remote diarizer slot, when this is a remote speaker (renameable);
+    /// `nil` for *you*, the mic track, which has no voiceprint to name.
+    var remoteSlot: Int? {
+        if case let .remote(slot) = self { slot } else { nil }
+    }
+
     /// A stable accent color per speaker so turns are scannable at a glance.
     var tint: Color {
         switch self {
@@ -108,13 +114,18 @@ struct SpeakerBlock: View {
     var activeWord: Int?
     /// Seek the player to a word's start when it's clicked. `nil` disables seeking.
     var onSeek: ((Duration) -> Void)?
+    /// Commit a new name for this speaker (double-click the name to rename); `nil`
+    /// — the live view, or *you* — makes the name a plain, non-editable label.
+    var onRename: ((String) -> Void)?
+
+    /// Whether the rename popover is open, and its in-progress text.
+    @State private var isRenaming = false
+    @State private var draftName = ""
 
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
             HStack(spacing: 6) {
-                Text(name ?? label.displayName)
-                    .font(.caption.bold())
-                    .foregroundStyle(label.tint)
+                speakerName
                 if let timestamp {
                     Text(timestamp)
                         .font(.caption2)
@@ -134,6 +145,53 @@ struct SpeakerBlock: View {
                 .textSelection(.enabled)
                 .environment(\.openURL, OpenURLAction { url in seek(url) })
         }
+    }
+
+    /// The colored speaker name. When the turn is renameable (a remote speaker in
+    /// the final view), a double-click opens a popover to set a persistent name;
+    /// otherwise it's a plain label. Double-click — not single — so it never
+    /// fights selecting the transcript text.
+    @ViewBuilder private var speakerName: some View {
+        let text = Text(name ?? label.displayName)
+            .font(.caption.bold())
+            .foregroundStyle(label.tint)
+        if let onRename {
+            text
+                .help("Double-click to rename this speaker")
+                .onTapGesture(count: 2) {
+                    draftName = name ?? label.displayName
+                    isRenaming = true
+                }
+                .popover(isPresented: $isRenaming, arrowEdge: .bottom) {
+                    renamePopover(commit: onRename)
+                }
+        } else {
+            text
+        }
+    }
+
+    /// The rename editor: type a name, Return or Save persists it (and renames
+    /// every turn of this speaker); Escape/dismiss cancels.
+    private func renamePopover(commit: @escaping (String) -> Void) -> some View {
+        func save() {
+            commit(draftName)
+            isRenaming = false
+        }
+        return VStack(alignment: .leading, spacing: 8) {
+            Text("Speaker name")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            TextField("Name", text: $draftName)
+                .textFieldStyle(.roundedBorder)
+                .frame(width: 200)
+                .onSubmit(save)
+            HStack {
+                Spacer()
+                Button("Save", action: save)
+                    .keyboardShortcut(.defaultAction)
+            }
+        }
+        .padding(12)
     }
 
     /// The turn's text — each word a link carrying its start time, the active word
@@ -217,6 +275,8 @@ struct FinalTranscriptView: View {
     var cursor: Transcript.WordCursor?
     /// Seek the player when a word is tapped.
     var onSeek: ((Duration) -> Void)?
+    /// Rename a remote speaker (by slot) to a persistent name; `nil` disables it.
+    var onRename: ((Int, String) -> Void)?
 
     var body: some View {
         ScrollViewReader { proxy in
@@ -235,7 +295,8 @@ struct FinalTranscriptView: View {
                                 words: utterance.words,
                                 activeWord: cursor?.utteranceID == utterance.id ? cursor?
                                     .wordIndex : nil,
-                                onSeek: onSeek
+                                onSeek: onSeek,
+                                onRename: renameHandler(for: utterance.speaker)
                             )
                             .id(utterance.id)
                         }
@@ -250,5 +311,12 @@ struct FinalTranscriptView: View {
                 withAnimation { proxy.scrollTo(utteranceID, anchor: .center) }
             }
         }
+    }
+
+    /// A per-block rename closure: only remote speakers carry a voiceprint, so
+    /// *you* (the mic) and the disabled case (`onRename == nil`) get none.
+    private func renameHandler(for speaker: SpeakerLabel) -> ((String) -> Void)? {
+        guard let onRename, let slot = speaker.remoteSlot else { return nil }
+        return { name in onRename(slot, name) }
     }
 }

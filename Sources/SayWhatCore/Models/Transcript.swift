@@ -66,6 +66,23 @@ public struct Transcript: Sendable, Equatable {
         utterances.isEmpty
     }
 
+    /// A copy with every turn from remote `slot` relabeled to `name` — the
+    /// speaker's persistent identity just changed (the user named them). Turns
+    /// from other speakers are untouched; ids, text, and timings are preserved.
+    public func renamingSpeaker(_ slot: Int, to name: String) -> Transcript {
+        Transcript(utterances: utterances.map { utterance in
+            guard utterance.speaker == .remote(slot) else { return utterance }
+            return Utterance(
+                id: utterance.id,
+                speaker: utterance.speaker,
+                speakerName: name,
+                text: utterance.text,
+                range: utterance.range,
+                words: utterance.words
+            )
+        })
+    }
+
     /// The end of the last utterance — the transcript's overall length.
     public var duration: Duration {
         utterances.last?.end ?? .zero
