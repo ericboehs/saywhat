@@ -17,14 +17,24 @@ public struct Transcript: Sendable, Equatable {
         /// Who spoke — channel-coarse (``SpeakerLabel/you``) plus the remote slot
         /// resolved by offline diarization.
         public let speaker: SpeakerLabel
+        /// The persistent identity resolved for this turn (e.g. "Eric"), when a
+        /// ``Voiceprint`` matched; `nil` falls back to the slot's generic label.
+        public let speakerName: String?
         /// The finalized text for this turn.
         public let text: String
         /// When this turn occurred, relative to the start of the session.
         public let range: Range<Duration>
 
-        public init(id: Int, speaker: SpeakerLabel, text: String, range: Range<Duration>) {
+        public init(
+            id: Int,
+            speaker: SpeakerLabel,
+            speakerName: String? = nil,
+            text: String,
+            range: Range<Duration>
+        ) {
             self.id = id
             self.speaker = speaker
+            self.speakerName = speakerName
             self.text = text
             self.range = range
         }

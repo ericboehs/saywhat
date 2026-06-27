@@ -30,7 +30,15 @@ public struct OfflineTimelineBuilder: Sendable {
 
     /// Build a ``SpeakerTimeline`` from raw diarized segments, assigning integer
     /// speaker slots by the order each id first speaks.
-    public func timeline(from segments: [RawSpeakerSegment]) -> SpeakerTimeline {
+    ///
+    /// - Parameter speakerEmbeddings: optional engine speaker-id → 256-dim
+    ///   embedding (the offline result's `speakerDatabase`). Re-keyed onto the
+    ///   integer slots so identity resolution can match each remote speaker to a
+    ///   persistent ``Voiceprint``. Ids with no embedding are simply omitted.
+    public func timeline(
+        from segments: [RawSpeakerSegment],
+        speakerEmbeddings: [String: [Float]] = [:]
+    ) -> SpeakerTimeline {
         let ordered = segments
             .filter { $0.range.upperBound > $0.range.lowerBound }
             .sorted { $0.range.lowerBound < $1.range.lowerBound }
@@ -45,6 +53,13 @@ public struct OfflineTimelineBuilder: Sendable {
             }()
             turns.append(SpeakerTurn(speaker: slot, range: segment.range))
         }
-        return SpeakerTimeline(turns: turns)
+
+        var embeddings: [Int: [Float]] = [:]
+        for (speakerId, slot) in slots {
+            if let embedding = speakerEmbeddings[speakerId] {
+                embeddings[slot] = embedding
+            }
+        }
+        return SpeakerTimeline(turns: turns, embeddings: embeddings)
     }
 }

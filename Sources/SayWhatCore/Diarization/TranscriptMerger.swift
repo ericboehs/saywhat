@@ -23,43 +23,61 @@ public struct TranscriptMerger: Sendable {
     ///   - system: finalized segments from the system track (remote speakers).
     ///   - remoteSpeakers: offline diarization of the system track, used to name
     ///     each system segment's remote slot. Absent coverage falls back to slot 0.
+    ///   - names: optional remote slot → persistent identity (e.g. `1: "Eric"`)
+    ///     from ``SpeakerResolver``. A slot with no entry keeps its generic label.
     /// Volatile or empty segments are ignored; the result is ordered by start time.
     public func merge(
         mic: [TranscriptSegment],
         system: [TranscriptSegment],
-        remoteSpeakers: SpeakerTimeline
+        remoteSpeakers: SpeakerTimeline,
+        names: [Int: String] = [:]
     ) -> Transcript {
-        var labeled: [(label: SpeakerLabel, segment: TranscriptSegment)] = []
+        var labeled: [LabeledSegment] = []
         for segment in mic where segment.isFinal {
-            labeled.append((.you, segment))
+            labeled.append(LabeledSegment(label: .you, name: nil, segment: segment))
         }
         for segment in system where segment.isFinal {
             let slot = remoteSpeakers.dominantSpeaker(in: segment.range) ?? 0
-            labeled.append((.remote(slot), segment))
+            labeled.append(LabeledSegment(
+                label: .remote(slot),
+                name: names[slot],
+                segment: segment
+            ))
         }
         labeled.sort { $0.segment.start < $1.segment.start }
 
         var utterances: [Transcript.Utterance] = []
-        for (label, segment) in labeled {
-            let text = segment.text.trimmingCharacters(in: .whitespacesAndNewlines)
+        for entry in labeled {
+            let label = entry.label
+            let text = entry.segment.text.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !text.isEmpty else { continue }
             if let last = utterances.last, last.speaker == label {
                 // Same speaker still holds the floor — extend their block.
                 utterances[utterances.count - 1] = Transcript.Utterance(
                     id: last.id,
                     speaker: label,
+                    speakerName: last.speakerName,
                     text: last.text + " " + text,
-                    range: last.start ..< Swift.max(last.end, segment.end)
+                    range: last.start ..< Swift.max(last.end, entry.segment.end)
                 )
             } else {
                 utterances.append(Transcript.Utterance(
                     id: utterances.count,
                     speaker: label,
+                    speakerName: entry.name,
                     text: text,
-                    range: segment.range
+                    range: entry.segment.range
                 ))
             }
         }
         return Transcript(utterances: utterances)
+    }
+
+    /// A finalized segment paired with its resolved speaker label and identity —
+    /// the intermediate the merge sorts and coalesces over.
+    private struct LabeledSegment {
+        let label: SpeakerLabel
+        let name: String?
+        let segment: TranscriptSegment
     }
 }

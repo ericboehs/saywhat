@@ -53,6 +53,65 @@ struct TranscriptMergerTests {
         #expect(result.utterances.map(\.speaker) == [.remote(0), .remote(1)])
     }
 
+    @Test("tags each remote slot with its resolved persistent identity")
+    func appliesResolvedNames() {
+        let system = [
+            segment(.system, "first", from: 0, to: 1),
+            segment(.system, "second", from: 2, to: 3),
+        ]
+        let timeline = SpeakerTimeline(turns: [
+            SpeakerTurn(speaker: 0, range: .seconds(0) ..< .seconds(1)),
+            SpeakerTurn(speaker: 1, range: .seconds(2) ..< .seconds(3)),
+        ])
+        let result = TranscriptMerger().merge(
+            mic: [],
+            system: system,
+            remoteSpeakers: timeline,
+            names: [0: "Eric", 1: "Ashley"]
+        )
+
+        #expect(result.utterances.map(\.speakerName) == ["Eric", "Ashley"])
+    }
+
+    @Test("a slot with no resolved name keeps a nil identity; you is never named")
+    func unnamedSlotsAndYou() {
+        let mic = [segment(.microphone, "me", from: 0, to: 1)]
+        let system = [segment(.system, "them", from: 1, to: 2)]
+        let timeline = SpeakerTimeline(turns: [
+            SpeakerTurn(speaker: 0, range: .seconds(1) ..< .seconds(2)),
+        ])
+        // Only slot 1 is named; slot 0 (the actual speaker here) isn't.
+        let result = TranscriptMerger().merge(
+            mic: mic,
+            system: system,
+            remoteSpeakers: timeline,
+            names: [1: "Ashley"]
+        )
+
+        #expect(result.utterances.map(\.speakerName) == [nil, nil])
+    }
+
+    @Test("a coalesced same-speaker block keeps the first turn's resolved name")
+    func coalesceKeepsName() {
+        let system = [
+            segment(.system, "one", from: 0, to: 1),
+            segment(.system, "two", from: 1, to: 2),
+        ]
+        let timeline = SpeakerTimeline(turns: [
+            SpeakerTurn(speaker: 0, range: .seconds(0) ..< .seconds(2)),
+        ])
+        let result = TranscriptMerger().merge(
+            mic: [],
+            system: system,
+            remoteSpeakers: timeline,
+            names: [0: "Eric"]
+        )
+
+        #expect(result.utterances.count == 1)
+        #expect(result.utterances.first?.text == "one two")
+        #expect(result.utterances.first?.speakerName == "Eric")
+    }
+
     @Test("coalesces consecutive same-speaker turns into one block")
     func coalescesSameSpeaker() {
         let mic = [
