@@ -25,11 +25,23 @@ public struct TranscriptSegment: Sendable, Equatable {
     /// still a replaceable best guess (see ``isVolatile``).
     public let isFinal: Bool
 
-    public init(source: CaptureSource, text: String, range: Range<Duration>, isFinal: Bool) {
+    /// Per-word timings within this span, when the recognizer provides them
+    /// (token-level ASR). Empty otherwise — nothing requires them. See
+    /// ``WordTiming``.
+    public let words: [WordTiming]
+
+    public init(
+        source: CaptureSource,
+        text: String,
+        range: Range<Duration>,
+        isFinal: Bool,
+        words: [WordTiming] = []
+    ) {
         self.source = source
         self.text = text
         self.range = range
         self.isFinal = isFinal
+        self.words = words
     }
 
     /// `true` while this is an in-progress guess a later segment may replace.

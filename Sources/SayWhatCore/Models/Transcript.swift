@@ -24,19 +24,25 @@ public struct Transcript: Sendable, Equatable {
         public let text: String
         /// When this turn occurred, relative to the start of the session.
         public let range: Range<Duration>
+        /// Per-word timings spanning this turn, in order, when the batch ASR
+        /// provided them — drives word-level playback highlighting. Empty
+        /// otherwise. See ``WordTiming``.
+        public let words: [WordTiming]
 
         public init(
             id: Int,
             speaker: SpeakerLabel,
             speakerName: String? = nil,
             text: String,
-            range: Range<Duration>
+            range: Range<Duration>,
+            words: [WordTiming] = []
         ) {
             self.id = id
             self.speaker = speaker
             self.speakerName = speakerName
             self.text = text
             self.range = range
+            self.words = words
         }
 
         /// Where this turn begins, relative to the start of the session.
