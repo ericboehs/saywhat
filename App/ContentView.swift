@@ -65,6 +65,11 @@ final class CaptureModel {
     /// End of the latest audio seen, for attributing range-less volatile guesses.
     private var latestTime: Duration = .zero
 
+    /// Streams each finalized live segment to `transcript.md` in the session
+    /// directory so the meeting can be read (e.g. `tail -f`) as it happens; `nil`
+    /// until a recording starts.
+    private var transcriptLog: TranscriptLog?
+
     /// A rolling window of recent finalized remote speech, used to suppress the
     /// remote's echo on the mic track live (you're on speakers) the same way the
     /// final-pass merge does. Pruned to the last few seconds — echo lags its
@@ -93,6 +98,7 @@ final class CaptureModel {
         recentRemoteSpeech = []
         remoteVolatile = nil
         latestTime = .zero
+        transcriptLog = nil
         errorMessage = nil
 
         let session = RecordingSession(directory: Self.newSessionDirectory())
@@ -101,6 +107,8 @@ final class CaptureModel {
         recording = Task { [microphone, system] in
             do {
                 try session.createDirectory()
+                // The directory now exists; start streaming finalized lines to it.
+                transcriptLog = TranscriptLog(directory: session.directory)
                 let micWriter = try session.writer(for: .microphone)
                 let systemWriter = try session.writer(for: .system)
 
@@ -260,6 +268,7 @@ final class CaptureModel {
             remoteVolatile = nil
             recordRemoteSpeech(segment)
             transcript.appendFinal(segment.text, label: .remote(slot), source: .system)
+            logFinal(segment, label: .remote(slot))
         } else {
             remoteVolatile = segment
             transcript.setVolatile(segment.text, label: .remote(slot), source: .system)
@@ -274,9 +283,20 @@ final class CaptureModel {
             transcript.setVolatile("", label: .you, source: .microphone)
         } else if segment.isFinal {
             transcript.appendFinal(segment.text, label: .you, source: .microphone)
+            logFinal(segment, label: .you)
         } else {
             transcript.setVolatile(segment.text, label: .you, source: .microphone)
         }
+    }
+
+    /// Append a finalized live segment to the session's `transcript.md` so it can
+    /// be read while the meeting is still going. Best-effort: a log-write failure
+    /// must never disturb capture, storage, or the on-screen transcript.
+    private func logFinal(_ segment: TranscriptSegment, label: SpeakerLabel) {
+        let text = segment.text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else { return }
+        let timecode = SayWhat.timecode(seconds: Int(segment.start.seconds))
+        try? transcriptLog?.append(timecode: timecode, speaker: label.displayName, text: text)
     }
 
     /// Whether a mic segment is an echo of recent or in-flight remote speech.
