@@ -39,11 +39,7 @@ final class PlaybackController {
     /// tracks' segments are concatenated in order and overlaid from time 0; a track
     /// with no segments is simply absent. Safe to call once per finished recording.
     func load(session: RecordingSession) async {
-        let reader = RecordingReader()
-        let composition = AVMutableComposition()
-        for source in CaptureSource.allCases {
-            await Self.appendTrack(reader.segmentURLs(for: source, in: session), to: composition)
-        }
+        let composition = await RecordingMix.composition(for: session)
 
         player.replaceCurrentItem(with: AVPlayerItem(asset: composition))
         duration = .seconds(composition.duration.seconds)
@@ -92,31 +88,6 @@ final class PlaybackController {
     private func finish() {
         isPlaying = false
         seek(to: .zero)
-    }
-
-    /// Concatenate one track's ordered segment files into a fresh composition
-    /// audio track, starting at time 0. Unreadable segments are skipped.
-    private static func appendTrack(_ urls: [URL], to composition: AVMutableComposition) async {
-        guard !urls.isEmpty,
-              let track = composition.addMutableTrack(
-                  withMediaType: .audio,
-                  preferredTrackID: kCMPersistentTrackID_Invalid
-              )
-        else { return }
-
-        var cursor = CMTime.zero
-        for url in urls {
-            let asset = AVURLAsset(url: url)
-            guard let source = try? await asset.loadTracks(withMediaType: .audio).first,
-                  let assetDuration = try? await asset.load(.duration)
-            else { continue }
-            try? track.insertTimeRange(
-                CMTimeRange(start: .zero, duration: assetDuration),
-                of: source,
-                at: cursor
-            )
-            cursor = CMTimeAdd(cursor, assetDuration)
-        }
     }
 }
 
