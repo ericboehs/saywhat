@@ -69,11 +69,10 @@ public struct TranscriptMerger: Sendable {
             atoms.append(contentsOf: Self.atoms(of: segment, label: .you, name: nil))
         }
         for segment in system where segment.isFinal {
-            let slot = remoteSpeakers.dominantSpeaker(in: segment.range) ?? 0
-            atoms.append(contentsOf: Self.atoms(
+            atoms.append(contentsOf: Self.remoteAtoms(
                 of: segment,
-                label: .remote(slot),
-                name: names[slot]
+                speakers: remoteSpeakers,
+                names: names
             ))
         }
         atoms.sort { $0.range.lowerBound < $1.range.lowerBound }
@@ -144,6 +143,34 @@ public struct TranscriptMerger: Sendable {
     private static func endsSentence(_ text: String) -> Bool {
         guard let last = text.reversed().first(where: { !$0.isWhitespace }) else { return false }
         return last == "." || last == "?" || last == "!"
+    }
+
+    /// Split a *system* segment into per-word atoms, each tagged with the remote
+    /// speaker who dominated **that word's** window — so a second speaker's short
+    /// interjection inside one ASR segment ("I think that would help, yeah" between
+    /// the monologue and its resumption) becomes its own turn instead of being
+    /// swallowed by whichever speaker dominated the segment as a whole. Falls back
+    /// to the whole segment (dominant over its full range, else slot 0) when the
+    /// batch ASR gave no word timings to split on.
+    private static func remoteAtoms(
+        of segment: TranscriptSegment,
+        speakers: SpeakerTimeline,
+        names: [Int: String]
+    ) -> [Atom] {
+        func atom(text: String, range: Range<Duration>, words: [WordTiming]) -> Atom {
+            let slot = speakers.dominantSpeaker(in: range) ?? 0
+            return Atom(
+                label: .remote(slot),
+                name: names[slot],
+                text: text,
+                range: range,
+                words: words
+            )
+        }
+        guard !segment.words.isEmpty else {
+            return [atom(text: segment.text, range: segment.range, words: [])]
+        }
+        return segment.words.map { atom(text: $0.text, range: $0.range, words: [$0]) }
     }
 
     /// Split a labeled segment into the time-ordered atoms the merge interleaves:
