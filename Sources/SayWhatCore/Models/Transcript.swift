@@ -70,4 +70,33 @@ public struct Transcript: Sendable, Equatable {
     public var duration: Duration {
         utterances.last?.end ?? .zero
     }
+
+    /// Identifies one word in the transcript: its utterance and the word's index
+    /// within that utterance's ``Utterance/words``.
+    public struct WordCursor: Sendable, Equatable {
+        /// The ``Utterance/id`` of the utterance the word belongs to.
+        public let utteranceID: Int
+        /// The word's position within that utterance's word timings.
+        public let wordIndex: Int
+
+        public init(utteranceID: Int, wordIndex: Int) {
+            self.utteranceID = utteranceID
+            self.wordIndex = wordIndex
+        }
+    }
+
+    /// The word to highlight at `time` on the session timeline, for karaoke-style
+    /// playback: the latest word that has started at or before `time`. It stays lit
+    /// through any gap until the next word begins, so the highlight never flickers
+    /// off mid-sentence. `nil` before the first word starts, or when no utterance
+    /// carries word timings (the batch ASR gave none). See ``WordTiming``.
+    public func wordCursor(at time: Duration) -> WordCursor? {
+        var cursor: WordCursor?
+        for utterance in utterances {
+            for (index, word) in utterance.words.enumerated() where word.range.lowerBound <= time {
+                cursor = WordCursor(utteranceID: utterance.id, wordIndex: index)
+            }
+        }
+        return cursor
+    }
 }
