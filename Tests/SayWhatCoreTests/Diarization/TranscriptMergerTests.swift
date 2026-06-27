@@ -145,6 +145,20 @@ struct TranscriptMergerTests {
         #expect(result.utterances.map(\.text) == ["kept"])
     }
 
+    @Test("drops punctuation-only segments the ASR sometimes emits")
+    func dropsPunctuationOnly() {
+        let mic = [segment(.microphone, "real words", from: 0, to: 1)]
+        // A lone "." on the system track must not become a contentless turn.
+        let system = [segment(.system, ".", from: 1, to: 2)]
+        let result = TranscriptMerger().merge(
+            mic: mic,
+            system: system,
+            remoteSpeakers: SpeakerTimeline()
+        )
+
+        #expect(result.utterances.map(\.text) == ["real words"])
+    }
+
     @Test("remote turn with no diarized coverage falls back to slot 0")
     func remoteFallback() {
         let system = [segment(.system, "who am i", from: 5, to: 6)]
