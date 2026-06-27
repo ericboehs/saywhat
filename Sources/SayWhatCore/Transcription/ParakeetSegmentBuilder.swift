@@ -4,7 +4,9 @@ import Foundation
 /// A thin, FluidAudio-free mirror of the engine's token timing so the
 /// segment-shaping logic below can be unit-tested without loading any model.
 public struct TimedToken: Sendable, Equatable {
-    /// The raw token text, including the SentencePiece word-start marker `▁`.
+    /// The token text as the engine surfaces it, including its word-start marker —
+    /// the raw SentencePiece `▁`, or the leading space FluidAudio emits. Either is
+    /// understood when the builder reconstructs words (see ``startsWord(_:)``).
     public let text: String
     public let start: Duration
     public let end: Duration
@@ -95,9 +97,12 @@ public struct ParakeetSegmentBuilder: Sendable {
     }
 
     /// Group tokens into per-word ``WordTiming``s for karaoke-style playback
-    /// highlighting. A `▁`-prefixed token starts a new word; trailing tokens (e.g.
-    /// `▁play`, `ing`) fold into it. Each word spans from its first token's start
-    /// to its last token's end, offset by `base` onto the session timeline.
+    /// highlighting *and* — more importantly — so the merge can interleave a short
+    /// interjection by word inside a long turn. A word-start token (see
+    /// ``startsWord(_:)``) opens a new word; trailing tokens (`▁play` + `ing`, or
+    /// the leading-space `▁play` form FluidAudio emits, then `ing`) fold into it.
+    /// Each word spans from its first token's start to its last token's end,
+    /// offset by `base` onto the session timeline.
     private static func words(_ tokens: [TimedToken], base: Duration) -> [WordTiming] {
         var words: [WordTiming] = []
         var text = ""
@@ -113,17 +118,32 @@ public struct ParakeetSegmentBuilder: Sendable {
         }
 
         for token in tokens {
-            let piece = token.text.replacingOccurrences(of: "\u{2581}", with: "")
-            if token.text.hasPrefix("\u{2581}"), !text.isEmpty {
+            if startsWord(token.text), !text.isEmpty {
                 flush()
             }
             if text.isEmpty {
                 start = token.start
             }
-            text += piece
+            text += piece(token.text)
             end = token.end
         }
         flush()
         return words
+    }
+
+    /// Whether `token` opens a new word. Parakeet's word-boundary marker varies by
+    /// how the engine surfaces its timings: the raw SentencePiece `▁`, or — as
+    /// FluidAudio's `TokenTiming` actually delivers — a leading space. Treat both
+    /// as boundaries so per-word timings survive either convention.
+    private static func startsWord(_ token: String) -> Bool {
+        token.hasPrefix("\u{2581}") || (token.first?.isWhitespace ?? false)
+    }
+
+    /// A token's visible text with its leading word-boundary marker (`▁` or
+    /// whitespace) stripped, so reconstructed words carry no stray prefix.
+    private static func piece(_ token: String) -> String {
+        if token.hasPrefix("\u{2581}") { return String(token.dropFirst()) }
+        if token.first?.isWhitespace == true { return String(token.drop(while: \.isWhitespace)) }
+        return token
     }
 }

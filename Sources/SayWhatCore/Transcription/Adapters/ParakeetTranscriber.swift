@@ -68,7 +68,19 @@ public final class ParakeetTranscriber: Transcriber {
                         return
                     }
 
-                    let manager = AsrManager(models: models)
+                    // `melChunkContext: false` — the 80 ms mel-context prepend
+                    // FluidAudio enables by default (PR #264) shifts the v3
+                    // encoder's first-frame distribution on long-form audio
+                    // enough that the TDT decoder drifts to blank and **drops a
+                    // whole clause** at chunk boundaries (FluidAudio issue #594).
+                    // Verified on real sessions: the default path silently
+                    // omitted ~5 s of remote speech a user had interjected over,
+                    // making their reply read as misplaced. The no-mel path
+                    // (acoustic warmup + silence-aligned starts) recovers it.
+                    let manager = AsrManager(
+                        config: ASRConfig(melChunkContext: false),
+                        models: models
+                    )
                     var state = try TdtDecoderState()
                     let result = try await manager.transcribe(samples, decoderState: &state)
 
