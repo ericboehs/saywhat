@@ -25,7 +25,8 @@ public struct TranscriptMerger: Sendable {
     ///     each system segment's remote slot. Absent coverage falls back to slot 0.
     ///   - names: optional remote slot → persistent identity (e.g. `1: "Eric"`)
     ///     from ``SpeakerResolver``. A slot with no entry keeps its generic label.
-    /// Volatile or empty segments are ignored; the result is ordered by start time.
+    /// Volatile, empty, or punctuation-only segments are ignored; the result is
+    /// ordered by start time.
     public func merge(
         mic: [TranscriptSegment],
         system: [TranscriptSegment],
@@ -50,7 +51,9 @@ public struct TranscriptMerger: Sendable {
         for entry in labeled {
             let label = entry.label
             let text = entry.segment.text.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !text.isEmpty else { continue }
+            // Require real content: the batch ASR sometimes emits a lone "."
+            // which would otherwise render as an empty, mislabeled speaker turn.
+            guard text.contains(where: { $0.isLetter || $0.isNumber }) else { continue }
             if let last = utterances.last, last.speaker == label {
                 // Same speaker still holds the floor — extend their block.
                 utterances[utterances.count - 1] = Transcript.Utterance(
