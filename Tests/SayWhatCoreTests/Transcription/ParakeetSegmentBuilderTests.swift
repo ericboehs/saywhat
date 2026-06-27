@@ -85,4 +85,37 @@ struct ParakeetSegmentBuilderTests {
         let tokens = [token("\u{2581}", from: 0.0, to: 0.2)]
         #expect(builder.segments(tokens: tokens).isEmpty)
     }
+
+    @Test("emits one word timing per word, folding sub-tokens into the word")
+    func wordTimings() {
+        let tokens = [
+            token("\u{2581}play", from: 0.0, to: 0.3),
+            token("ing", from: 0.3, to: 0.5),
+            token("\u{2581}music", from: 0.6, to: 1.0),
+        ]
+        let words = builder.segments(tokens: tokens)[0].words
+
+        #expect(words.map(\.text) == ["playing", "music"])
+        #expect(words[0].range == .seconds(0.0) ..< .seconds(0.5))
+        #expect(words[1].range == .seconds(0.6) ..< .seconds(1.0))
+    }
+
+    @Test("offsets each word timing by the track's session base")
+    func wordTimingsBase() {
+        let tokens = [token("\u{2581}late", from: 0.0, to: 0.5)]
+        let words = builder.segments(tokens: tokens, base: .seconds(10))[0].words
+
+        #expect(words == [WordTiming(text: "late", range: .seconds(10.0) ..< .seconds(10.5))])
+    }
+
+    @Test("the no-timings fallback segment carries no word timings")
+    func fallbackHasNoWords() {
+        let result = builder.segments(
+            tokens: [],
+            fallbackText: "whole thing",
+            fallbackDuration: .seconds(4)
+        )
+
+        #expect(result[0].words.isEmpty)
+    }
 }
