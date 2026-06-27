@@ -100,6 +100,24 @@ struct ParakeetSegmentBuilderTests {
         #expect(words[1].range == .seconds(0.6) ..< .seconds(1.0))
     }
 
+    @Test("splits per word when FluidAudio marks word starts with a leading space")
+    func leadingSpaceWordBoundaries() {
+        // FluidAudio's TokenTiming uses a leading space (not the SentencePiece ▁)
+        // to mark a word start. The builder must still split per word, or a long
+        // turn collapses into one un-interleavable atom (the merge can't split it).
+        let tokens = [
+            token(" play", from: 0.0, to: 0.3),
+            token("ing", from: 0.3, to: 0.5),
+            token(" music", from: 0.6, to: 1.0),
+        ]
+        let segment = builder.segments(tokens: tokens)[0]
+
+        #expect(segment.text == "playing music")
+        #expect(segment.words.map(\.text) == ["playing", "music"])
+        #expect(segment.words[0].range == .seconds(0.0) ..< .seconds(0.5))
+        #expect(segment.words[1].range == .seconds(0.6) ..< .seconds(1.0))
+    }
+
     @Test("offsets each word timing by the track's session base")
     func wordTimingsBase() {
         let tokens = [token("\u{2581}late", from: 0.0, to: 0.5)]
