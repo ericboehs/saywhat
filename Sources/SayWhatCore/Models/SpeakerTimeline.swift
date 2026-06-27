@@ -21,8 +21,15 @@ public struct SpeakerTurn: Sendable, Equatable {
 public struct SpeakerTimeline: Sendable, Equatable {
     public private(set) var turns: [SpeakerTurn]
 
-    public init(turns: [SpeakerTurn] = []) {
+    /// Per-slot speaker embedding (256-dim, L2-normalized), when the diarizer
+    /// surfaces one — the offline final pass does; the live path leaves it empty.
+    /// Keyed by the same slot as ``SpeakerTurn/speaker`` so identity resolution
+    /// can match each remote speaker to a persistent ``Voiceprint`` (DESIGN.md §6).
+    public let embeddings: [Int: [Float]]
+
+    public init(turns: [SpeakerTurn] = [], embeddings: [Int: [Float]] = [:]) {
         self.turns = turns
+        self.embeddings = embeddings
     }
 
     /// The speaker covering the most of `range`, or `nil` if no turn overlaps it.

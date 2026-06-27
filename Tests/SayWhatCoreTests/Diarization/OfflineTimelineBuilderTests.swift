@@ -58,4 +58,37 @@ struct OfflineTimelineBuilderTests {
         // 1.5–4.5 s overlaps b for 2.5 s vs a for 0.5 s.
         #expect(result.dominantSpeaker(in: .seconds(1.5) ..< .seconds(4.5)) == 1)
     }
+
+    @Test("re-keys speaker-id embeddings onto their integer slots")
+    func reKeysEmbeddings() {
+        // "bravo" talks first → slot 0; "alpha" → slot 1.
+        let result = builder.timeline(
+            from: [
+                segment("alpha", from: 2, to: 3),
+                segment("bravo", from: 0, to: 1),
+            ],
+            speakerEmbeddings: ["alpha": [1, 0], "bravo": [0, 1]]
+        )
+
+        #expect(result.embeddings == [0: [0, 1], 1: [1, 0]])
+    }
+
+    @Test("a speaker with no embedding is simply omitted from the map")
+    func partialEmbeddings() {
+        let result = builder.timeline(
+            from: [
+                segment("a", from: 0, to: 1),
+                segment("b", from: 1, to: 2),
+            ],
+            speakerEmbeddings: ["a": [1, 0]] // b has none
+        )
+
+        #expect(result.embeddings == [0: [1, 0]])
+    }
+
+    @Test("with no embeddings supplied the map is empty")
+    func noEmbeddings() {
+        let result = builder.timeline(from: [segment("a", from: 0, to: 1)])
+        #expect(result.embeddings.isEmpty)
+    }
 }
