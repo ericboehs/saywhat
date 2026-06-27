@@ -48,8 +48,11 @@ final class CaptureModel {
 
     /// The batch final pass: Parakeet per track + offline pyannote, merged into
     /// the authoritative transcript over the session's saved AAC (DESIGN.md §3).
+    /// The persistent voiceprint store lets it name remote speakers ("Eric") the
+    /// same way across meetings; a store failure degrades to generic labels.
     private let finalPass = FinalPass(
         diarizer: OfflinePyannoteDiarizer(),
+        store: CaptureModel.voiceprintStore(),
         makeTranscriber: { ParakeetTranscriber(source: $0) }
     )
 
@@ -294,6 +297,21 @@ final class CaptureModel {
             .appendingPathComponent(namespace, isDirectory: true)
             .appendingPathComponent("Recordings", isDirectory: true)
             .appendingPathComponent("session-\(stamp)", isDirectory: true)
+    }
+
+    /// Open the persistent voiceprint database under our bundle-namespaced
+    /// Application Support (alongside `Recordings/`). Returns `nil` if it can't be
+    /// opened — the final pass then falls back to generic `Speaker N` labels
+    /// rather than failing. On-device only; nothing here leaves the machine.
+    private static func voiceprintStore() -> VoiceprintStore? {
+        let base = FileManager.default
+            .urls(for: .applicationSupportDirectory, in: .userDomainMask).first
+            ?? URL(fileURLWithPath: NSTemporaryDirectory())
+        let namespace = Bundle.main.bundleIdentifier ?? "SayWhat"
+        let directory = base.appendingPathComponent(namespace, isDirectory: true)
+        try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let path = directory.appendingPathComponent("voiceprints.sqlite").path
+        return try? VoiceprintStore(path: path)
     }
 
     /// Attack fast, release slow — a meter that snaps up to peaks but eases back
