@@ -98,19 +98,42 @@ struct SpeakerBlock: View {
     /// slot label when the final pass recognized the speaker; `nil` falls back.
     var name: String?
     var volatile: Bool = false
+    /// Per-word timings for this turn; when present the text is rendered word by
+    /// word so one can be highlighted during playback.
+    var words: [WordTiming] = []
+    /// The index of the word the playhead is on, highlighted; `nil` highlights none.
+    var activeWord: Int?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
             Text(name ?? label.displayName)
                 .font(.caption.bold())
                 .foregroundStyle(label.tint)
-            Text(text)
+            content
                 .foregroundStyle(volatile ? .secondary : .primary)
                 .italic(volatile)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .multilineTextAlignment(.leading)
                 .textSelection(.enabled)
         }
+    }
+
+    /// The turn's text — highlighting the active word when word timings exist,
+    /// otherwise the plain string.
+    private var content: Text {
+        guard !words.isEmpty else { return Text(text) }
+        var attributed = AttributedString()
+        for (index, word) in words.enumerated() {
+            if index > 0 { attributed += AttributedString(" ") }
+            var run = AttributedString(word.text)
+            if index == activeWord {
+                run.backgroundColor = label.tint.opacity(0.3)
+                run.foregroundColor = .primary
+                run.inlinePresentationIntent = .stronglyEmphasized
+            }
+            attributed += run
+        }
+        return Text(attributed)
     }
 }
 
@@ -153,6 +176,9 @@ struct LiveTranscriptView: View {
 /// volatile — this is the canonical record (DESIGN.md §3).
 struct FinalTranscriptView: View {
     var transcript: Transcript
+    /// The word the playhead is on, highlighted karaoke-style; `nil` when not
+    /// playing or when the transcript has no word timings.
+    var cursor: Transcript.WordCursor?
 
     var body: some View {
         ScrollView {
@@ -165,7 +191,10 @@ struct FinalTranscriptView: View {
                         SpeakerBlock(
                             label: utterance.speaker,
                             text: utterance.text,
-                            name: utterance.speakerName
+                            name: utterance.speakerName,
+                            words: utterance.words,
+                            activeWord: cursor?.utteranceID == utterance.id ? cursor?
+                                .wordIndex : nil
                         )
                     }
                 }
