@@ -40,6 +40,9 @@ final class CaptureModel {
     private(set) var finalTranscript: Transcript?
     /// Non-nil while the final pass runs, narrating its current stage.
     private(set) var finalizeStatus: String?
+    /// Plays the finished recording's mixed audio so the final transcript can be
+    /// followed karaoke-style; set once the final pass produces a transcript.
+    private(set) var playback: PlaybackController?
 
     private(set) var sessionPath: String?
     private(set) var errorMessage: String?
@@ -93,6 +96,8 @@ final class CaptureModel {
         transcript = LiveTranscript()
         finalTranscript = nil
         finalizeStatus = nil
+        playback?.pause()
+        playback = nil
         remoteSpeakers = SpeakerTimeline()
         recentRemoteSpeech = []
         remoteVolatile = nil
@@ -168,6 +173,11 @@ final class CaptureModel {
                 Task { @MainActor in self.finalizeStatus = Self.describe(phase) }
             }
             finalTranscript = transcript
+            // Make the saved audio playable so the transcript can be followed
+            // along; a failure here just leaves playback unavailable.
+            let controller = PlaybackController()
+            await controller.load(session: session)
+            if controller.isReady { playback = controller }
         } catch let timeout as TimeoutError {
             errorMessage = "Finalize timed out at \(timeout.label). The recording is saved — try again."
         } catch {
@@ -340,6 +350,14 @@ final class CaptureModel {
         latestTime = Swift.max(latestTime, frame.startOffset + frame.duration)
     }
 
+    /// Attack fast, release slow — a meter that snaps up to peaks but eases back
+    /// so it reads instead of flickering.
+    private static func smooth(_ current: Float, toward target: Float) -> Float {
+        target > current ? target : current * 0.8 + target * 0.2
+    }
+}
+
+extension CaptureModel {
     /// A timestamped session directory under our bundle-namespaced Application
     /// Support, e.g. `…/Application Support/com.boehs.saywhat/Recordings/session-1750876200`.
     ///
@@ -347,7 +365,7 @@ final class CaptureModel {
     /// shared `~/Library/Application Support`. A sandboxed build does this via
     /// its container, but an unsigned dev build runs unsandboxed against the
     /// real directory, so we namespace explicitly.
-    private static func newSessionDirectory() -> URL {
+    static func newSessionDirectory() -> URL {
         let base = FileManager.default
             .urls(for: .applicationSupportDirectory, in: .userDomainMask).first
             ?? URL(fileURLWithPath: NSTemporaryDirectory())
@@ -363,7 +381,7 @@ final class CaptureModel {
     /// Application Support (alongside `Recordings/`). Returns `nil` if it can't be
     /// opened — the final pass then falls back to generic `Speaker N` labels
     /// rather than failing. On-device only; nothing here leaves the machine.
-    private static func voiceprintStore() -> VoiceprintStore? {
+    static func voiceprintStore() -> VoiceprintStore? {
         let base = FileManager.default
             .urls(for: .applicationSupportDirectory, in: .userDomainMask).first
             ?? URL(fileURLWithPath: NSTemporaryDirectory())
@@ -372,56 +390,6 @@ final class CaptureModel {
         try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let path = directory.appendingPathComponent("voiceprints.sqlite").path
         return try? VoiceprintStore(path: path)
-    }
-
-    /// Attack fast, release slow — a meter that snaps up to peaks but eases back
-    /// so it reads instead of flickering.
-    private static func smooth(_ current: Float, toward target: Float) -> Float {
-        target > current ? target : current * 0.8 + target * 0.2
-    }
-}
-
-/// A horizontal input-level meter driven by a `0...1` level, green→red as it
-/// approaches clipping.
-struct LevelMeter: View {
-    var level: Float
-
-    var body: some View {
-        GeometryReader { geometry in
-            ZStack(alignment: .leading) {
-                Capsule().fill(.quaternary)
-                Capsule()
-                    .fill(level < 0.85 ? Color.green : Color.red)
-                    .frame(width: geometry.size.width * CGFloat(min(max(level, 0), 1)))
-            }
-        }
-        .frame(height: 8)
-        .animation(.linear(duration: 0.05), value: level)
-        .accessibilityLabel("Input level")
-        .accessibilityValue("\(Int(min(max(level, 0), 1) * 100)) percent")
-    }
-}
-
-/// One track's label, meter, and frame/sample counters.
-struct TrackRow: View {
-    var title: String
-    var level: Float
-    var frames: Int
-    var samples: Int
-    var active: Bool
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text(title)
-                .font(.caption.bold())
-                .foregroundStyle(.secondary)
-            LevelMeter(level: level)
-                .opacity(active ? 1 : 0.35)
-            Text("\(frames) frames · \(samples) samples")
-                .monospacedDigit()
-                .font(.caption)
-                .foregroundStyle(.secondary)
-        }
     }
 }
 
@@ -458,7 +426,17 @@ struct ContentView: View {
                     }
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                 } else if let finalTranscript = model.finalTranscript, !model.isRecording {
-                    FinalTranscriptView(transcript: finalTranscript)
+                    VStack(spacing: 12) {
+                        FinalTranscriptView(
+                            transcript: finalTranscript,
+                            cursor: model.playback.flatMap {
+                                finalTranscript.wordCursor(at: $0.currentTime)
+                            }
+                        )
+                        if let playback = model.playback {
+                            PlaybackBar(playback: playback)
+                        }
+                    }
                 } else {
                     LiveTranscriptView(
                         transcript: model.transcript,
