@@ -49,24 +49,33 @@ final class CaptureModel {
     private let diarizer: any Diarizer = SortformerLiveDiarizer()
     private var recording: Task<Void, Never>?
 
-    /// The batch final pass: Parakeet per track, with hybrid diarization — turns
-    /// from Sortformer (it splits the remote speakers cleanly where offline
-    /// pyannote glues them together) and voiceprints from pyannote — merged into
-    /// the authoritative transcript over the session's saved AAC (DESIGN.md §3, §6).
-    /// The persistent voiceprint store lets it name remote speakers ("Eric") the
-    /// same way across meetings; a store failure degrades to generic labels.
-    private let finalPass = FinalPass(
-        diarizer: HybridDiarizer(
-            turns: SortformerLiveDiarizer(),
-            embeddings: OfflinePyannoteDiarizer()
-        ),
-        store: CaptureModel.voiceprintStore(),
-        makeTranscriber: { ParakeetTranscriber(source: $0) }
+    /// Hybrid diarization for the final pass: turns from Sortformer (it splits the
+    /// remote speakers cleanly where offline pyannote glues them together) and
+    /// voiceprints from pyannote (DESIGN.md §3, §6). Held once so its models stay
+    /// loaded across recordings; the pass itself is rebuilt per run to pick up the
+    /// current matching fuzziness.
+    private let finalDiarizer: any Diarizer = HybridDiarizer(
+        turns: SortformerLiveDiarizer(),
+        embeddings: OfflinePyannoteDiarizer()
     )
 
-    /// A handle to the same voiceprint directory the final pass writes, used to
-    /// persist a rename so future meetings recognize the speaker by the new name.
+    /// The persistent voiceprint directory: lets the final pass name remote
+    /// speakers ("Eric") the same way across meetings, and where a rename is
+    /// written back. A store failure degrades to generic labels.
     private let voiceprintStore = CaptureModel.voiceprintStore()
+
+    /// The batch final pass over the session's saved AAC — Parakeet per track,
+    /// hybrid diarization, merged into the authoritative transcript. Rebuilt each
+    /// run so the speaker matcher reflects the user's current fuzziness setting.
+    private func makeFinalPass() -> FinalPass {
+        FinalPass(
+            diarizer: finalDiarizer,
+            store: voiceprintStore,
+            resolver: SpeakerResolver(matcher: VoiceprintMatcher(threshold: AppSettings
+                    .matchThreshold)),
+            makeTranscriber: { ParakeetTranscriber(source: $0) }
+        )
+    }
 
     /// The diarizer's running split of the system track into remote speaker slots;
     /// names each live system segment's remote slot.
@@ -170,7 +179,7 @@ final class CaptureModel {
     private func runFinalPass(_ session: RecordingSession) async {
         finalizeStatus = Self.describe(.transcribing(.microphone))
         do {
-            let outcome = try await finalPass.run(session) { phase in
+            let outcome = try await makeFinalPass().run(session) { phase in
                 Task { @MainActor in self.finalizeStatus = Self.describe(phase) }
             }
             finalTranscript = outcome.transcript

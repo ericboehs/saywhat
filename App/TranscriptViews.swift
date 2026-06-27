@@ -121,6 +121,8 @@ struct SpeakerBlock: View {
     /// Whether the rename popover is open, and its in-progress text.
     @State private var isRenaming = false
     @State private var draftName = ""
+    /// Whether the pointer is over a renameable name, fading in the pencil hint.
+    @State private var isHovering = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
@@ -156,15 +158,26 @@ struct SpeakerBlock: View {
             .font(.caption.bold())
             .foregroundStyle(label.tint)
         if let onRename {
-            text
-                .help("Double-click to rename this speaker")
-                .onTapGesture(count: 2) {
-                    draftName = name ?? label.displayName
-                    isRenaming = true
-                }
-                .popover(isPresented: $isRenaming, arrowEdge: .bottom) {
-                    renamePopover(commit: onRename)
-                }
+            HStack(spacing: 4) {
+                text
+                // A pencil on hover hints that the name is clickable. It keeps its
+                // slot at zero opacity so fading it in never reflows the header.
+                Image(systemName: "pencil")
+                    .font(.caption)
+                    .foregroundStyle(label.tint)
+                    .opacity(isHovering ? 0.7 : 0)
+                    .animation(.easeInOut(duration: 0.12), value: isHovering)
+            }
+            .contentShape(.rect)
+            .help("Click to rename this speaker")
+            .onHover { isHovering = $0 }
+            .onTapGesture {
+                draftName = name ?? label.displayName
+                isRenaming = true
+            }
+            .popover(isPresented: $isRenaming, arrowEdge: .bottom) {
+                renamePopover(commit: onRename)
+            }
         } else {
             text
         }

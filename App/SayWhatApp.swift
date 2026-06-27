@@ -10,5 +10,9 @@ struct SayWhatApp: App {
             ContentView()
         }
         .windowResizability(.contentSize)
+
+        Settings {
+            SettingsView()
+        }
     }
 }
