@@ -153,6 +153,11 @@ final class CaptureModel {
                 try await systemWriter.finalize()
                 try session.markFinalized()
 
+                // Mix both tracks into one shareable recording.m4a. A convenience
+                // derived from the durable segments, so a failure here is logged
+                // and shrugged off rather than allowed to disturb the recording.
+                _ = try? await RecordingExporter.exportCombined(session)
+
                 // Capture is fully durable and closed; now re-transcribe and
                 // diarize the saved audio into the authoritative transcript.
                 await self.runFinalPass(session)
