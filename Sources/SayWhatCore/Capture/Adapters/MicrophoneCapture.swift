@@ -23,13 +23,23 @@ public enum CaptureError: Error, Sendable, Equatable {
 /// separate-tracks invariant it owns exactly one track and never touches system
 /// audio; that's a separate ``AudioCapture`` instance (see DESIGN.md §4).
 ///
+/// **Route changes.** Connecting headphones or a USB/Bluetooth interface
+/// changes the input device; `AVAudioEngine` responds by posting
+/// `AVAudioEngineConfigurationChange` and **stopping itself**. Without recovery
+/// the tap goes dead and the mic track silently ends mid-recording (observed:
+/// the mic stopped the instant headphones connected). ``reconfigure()`` listens
+/// for that notification, re-reads the new hardware format, rebuilds the
+/// resampler, reinstalls the tap, and restarts the engine — keeping the same
+/// stream and durable writer alive across the switch.
+///
 /// **Threading.** The tap block runs on Core Audio's real-time render thread.
 /// It does no allocation-heavy or blocking work beyond the resample and a
 /// non-blocking `continuation.yield`. Per-session fields (`resampler`,
-/// `continuation`, `emittedSamples`) are written once in ``start()`` before the
-/// tap is installed and read only from that single render thread until
-/// ``stop()`` removes the tap — so they need no lock; `lifecycle` serializes
-/// start/stop against each other. This confinement is why the type is
+/// `continuation`, `emittedSamples`) are first written in ``start()`` before the
+/// tap is installed and read on the render thread. ``reconfigure()`` may later
+/// rewrite `resampler`, but only after `removeTap` has quiesced the render
+/// thread (so the block can't be running concurrently), and under `lifecycle` —
+/// which also serializes start/stop. This confinement is why the type is
 /// `@unchecked Sendable` rather than an actor: an actor hop on the audio path
 /// would violate the real-time budget (QUALITY.md §4).
 public final class MicrophoneCapture: AudioCapture, @unchecked Sendable {
@@ -49,6 +59,17 @@ public final class MicrophoneCapture: AudioCapture, @unchecked Sendable {
     private var continuation: AsyncStream<AudioFrame>.Continuation?
     private var emittedSamples = 0
     private var emittedFrames = 0
+
+    /// Observer token for `AVAudioEngineConfigurationChange`, removed in
+    /// ``stop()``. Its handler runs on a dedicated serial queue so reconfiguration
+    /// never races a concurrent notification.
+    private var configObserver: NSObjectProtocol?
+    private let configQueue: OperationQueue = {
+        let queue = OperationQueue()
+        queue.maxConcurrentOperationCount = 1
+        queue.name = "com.boehs.saywhat.mic-reconfigure"
+        return queue
+    }()
 
     /// Frames per tap buffer. ~85 ms at 48 kHz — small enough for a responsive
     /// live transcript, large enough to keep render-thread overhead negligible.
@@ -75,59 +96,95 @@ public final class MicrophoneCapture: AudioCapture, @unchecked Sendable {
         }
 
         return try lifecycle.withLock { _ in
-            let input = engine.inputNode
-            let hardwareFormat = input.inputFormat(forBus: 0)
-            guard hardwareFormat.sampleRate > 0 else {
-                Self.log.error("no usable input device (hardware sample rate is 0)")
-                throw CaptureError.inputUnavailable
-            }
-            guard let resampler = ModelResampler(
-                inputFormat: hardwareFormat,
-                modelFormat: modelFormat
-            ) else {
-                Self.log.error("could not build converter from hardware format to model format")
-                throw CaptureError.converterUnavailable
-            }
-            self.resampler = resampler
-
             let (stream, continuation) = AsyncStream<AudioFrame>.makeStream()
             self.continuation = continuation
             emittedSamples = 0
             emittedFrames = 0
 
-            let onTap: AVAudioNodeTapBlock = { [weak self] buffer, _ in self?.ingest(buffer) }
-            input.installTap(
-                onBus: 0,
-                bufferSize: tapBufferSize,
-                format: hardwareFormat,
-                block: onTap
-            )
-
             do {
-                try engine.start()
+                try installTapAndStart()
             } catch {
-                Self.log
-                    .error(
-                        "engine failed to start: \(error.localizedDescription, privacy: .public)"
-                    )
-                input.removeTap(onBus: 0)
                 continuation.finish()
                 self.continuation = nil
-                self.resampler = nil
+                resampler = nil
                 throw error
             }
 
-            let hwRate = Int(hardwareFormat.sampleRate)
-            Self.log
-                .info(
-                    "started — hw \(hwRate) Hz \(hardwareFormat.channelCount) ch → model 16 kHz mono"
-                )
+            // Recover the tap across route changes (e.g. headphones connecting).
+            configObserver = NotificationCenter.default.addObserver(
+                forName: .AVAudioEngineConfigurationChange,
+                object: engine,
+                queue: configQueue
+            ) { [weak self] _ in self?.reconfigure() }
+
+            Self.log.info("started")
             return stream
+        }
+    }
+
+    /// Re-read the current input format, (re)build the resampler, install the tap,
+    /// and start the engine. The caller holds `lifecycle` and owns the lifetime of
+    /// `continuation`; shared by the initial ``start()`` and ``reconfigure()``.
+    private func installTapAndStart() throws {
+        let input = engine.inputNode
+        let hardwareFormat = input.inputFormat(forBus: 0)
+        guard hardwareFormat.sampleRate > 0 else {
+            Self.log.error("no usable input device (hardware sample rate is 0)")
+            throw CaptureError.inputUnavailable
+        }
+        guard let resampler = ModelResampler(
+            inputFormat: hardwareFormat,
+            modelFormat: modelFormat
+        ) else {
+            Self.log.error("could not build converter from hardware format to model format")
+            throw CaptureError.converterUnavailable
+        }
+        self.resampler = resampler
+
+        let onTap: AVAudioNodeTapBlock = { [weak self] buffer, _ in self?.ingest(buffer) }
+        input.installTap(onBus: 0, bufferSize: tapBufferSize, format: hardwareFormat, block: onTap)
+
+        do {
+            try engine.start()
+        } catch {
+            Self.log
+                .error("engine failed to start: \(error.localizedDescription, privacy: .public)")
+            input.removeTap(onBus: 0)
+            throw error
+        }
+
+        let hwRate = Int(hardwareFormat.sampleRate)
+        Self.log.info("tap installed — hw \(hwRate) Hz \(hardwareFormat.channelCount) ch → model")
+    }
+
+    /// Recover capture after a route change: AVAudioEngine has already stopped
+    /// itself, so tear down the dead tap and reinstall against the now-current
+    /// device, keeping the same stream alive. Runs on `configQueue`, serialized
+    /// with start/stop by `lifecycle`; a no-op once the session has stopped.
+    /// `emittedSamples` carries over, so the brief switch gap is the only
+    /// misalignment — far better than losing the rest of the track.
+    private func reconfigure() {
+        lifecycle.withLock { _ in
+            guard continuation != nil else { return }
+            Self.log.info("audio route changed — reinstalling mic tap")
+            engine.inputNode.removeTap(onBus: 0)
+            if engine.isRunning { engine.stop() }
+            do {
+                try installTapAndStart()
+            } catch {
+                Self.log.error(
+                    "mic reconfigure failed: \(error.localizedDescription, privacy: .public)"
+                )
+            }
         }
     }
 
     public func stop() async {
         lifecycle.withLock { _ in
+            if let configObserver {
+                NotificationCenter.default.removeObserver(configObserver)
+                self.configObserver = nil
+            }
             engine.inputNode.removeTap(onBus: 0)
             if engine.isRunning { engine.stop() }
             continuation?.finish()
