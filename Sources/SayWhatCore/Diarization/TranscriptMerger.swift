@@ -80,7 +80,7 @@ public struct TranscriptMerger: Sendable {
 
         var utterances: [Transcript.Utterance] = []
         for atom in atoms {
-            let text = atom.text.trimmingCharacters(in: .whitespacesAndNewlines)
+            let text = Self.cleanLeading(atom.text)
             // Require real content: the batch ASR sometimes emits a lone "."
             // which would otherwise render as an empty, mislabeled speaker turn.
             guard text.contains(where: { $0.isLetter || $0.isNumber }) else { continue }
@@ -124,6 +124,19 @@ public struct TranscriptMerger: Sendable {
             return true
         }
         return false
+    }
+
+    /// Sentence/clause marks the recognizer sometimes strands at the *start* of a
+    /// segment (e.g. a trailing "." from the previous utterance that floated onto
+    /// the next one). Interior and trailing punctuation is meaningful and untouched.
+    private static let strayLeading: Set<Character> = [".", ",", ";", ":", "!", "?"]
+
+    /// Trim leading whitespace and any stray leading sentence punctuation so an
+    /// utterance never opens on a stranded ". " or ", " the way the batch ASR
+    /// occasionally emits, then trim trailing whitespace.
+    private static func cleanLeading(_ text: String) -> String {
+        String(text.drop { $0.isWhitespace || strayLeading.contains($0) })
+            .trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     /// Whether `text` ends a sentence — its last non-space character is `.`, `?`,
