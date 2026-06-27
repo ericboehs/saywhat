@@ -49,12 +49,17 @@ final class CaptureModel {
     private let diarizer: any Diarizer = SortformerLiveDiarizer()
     private var recording: Task<Void, Never>?
 
-    /// The batch final pass: Parakeet per track + offline pyannote, merged into
-    /// the authoritative transcript over the session's saved AAC (DESIGN.md §3).
+    /// The batch final pass: Parakeet per track, with hybrid diarization — turns
+    /// from Sortformer (it splits the remote speakers cleanly where offline
+    /// pyannote glues them together) and voiceprints from pyannote — merged into
+    /// the authoritative transcript over the session's saved AAC (DESIGN.md §3, §6).
     /// The persistent voiceprint store lets it name remote speakers ("Eric") the
     /// same way across meetings; a store failure degrades to generic labels.
     private let finalPass = FinalPass(
-        diarizer: OfflinePyannoteDiarizer(),
+        diarizer: HybridDiarizer(
+            turns: SortformerLiveDiarizer(),
+            embeddings: OfflinePyannoteDiarizer()
+        ),
         store: CaptureModel.voiceprintStore(),
         makeTranscriber: { ParakeetTranscriber(source: $0) }
     )
