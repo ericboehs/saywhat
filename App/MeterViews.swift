@@ -21,12 +21,10 @@ struct LevelMeter: View {
     }
 }
 
-/// One track's label, meter, and frame/sample counters.
+/// One track's label and input-level meter.
 struct TrackRow: View {
     var title: String
     var level: Float
-    var frames: Int
-    var samples: Int
     var active: Bool
 
     var body: some View {
@@ -36,10 +34,6 @@ struct TrackRow: View {
                 .foregroundStyle(.secondary)
             LevelMeter(level: level)
                 .opacity(active ? 1 : 0.35)
-            Text("\(frames) frames · \(samples) samples")
-                .monospacedDigit()
-                .font(.caption)
-                .foregroundStyle(.secondary)
         }
     }
 }
