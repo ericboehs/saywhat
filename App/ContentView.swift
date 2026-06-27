@@ -5,16 +5,15 @@ import SwiftUI
 /// Drives both capture tracks (``MicrophoneCapture`` + ``SystemAudioCapture``),
 /// meters each, and persists each to durable AAC via a per-track
 /// ``DurableAACWriter`` in a ``RecordingSession``. Capture and storage stay
-/// separate end to end (the core invariant). For the *live transcript only*,
-/// both tracks are summed through an ``AudioMixer`` into one
-/// ``AppleSpeechTranscriber`` — so the speaker echo transcribes once, with no
-/// dedupe and nothing retracted on screen. See DESIGN.md §5.
+/// separate end to end (the core invariant), and so does the live transcript:
+/// each track feeds its **own** ``AppleSpeechTranscriber``, never a mix. A single
+/// recognizer can't separate two voices talking at once and drops the quieter
+/// one; per-track recognizers keep the user's overlapping speech. See DESIGN.md §5.
 ///
-/// Each transcript segment is attributed to a speaker: the mic channel is *you*,
-/// and a ``Diarizer`` (FluidAudio Sortformer) runs on the **system track** to
-/// split the remote speakers. ``SpeakerLabeler`` combines the two — mic-vs-system
-/// energy over the segment's window decides you-vs-remote, then the diarizer's
-/// timeline names the remote slot. See DESIGN.md §6.
+/// Attribution is by channel, the way the final pass does it: the mic track is
+/// always *you*, and the system track is the remote — split into speaker slots by
+/// a ``Diarizer`` (FluidAudio Sortformer) running on that track, so each remote
+/// segment takes the slot that dominated its window. See DESIGN.md §6.
 @MainActor
 @Observable
 final class CaptureModel {
@@ -28,7 +27,8 @@ final class CaptureModel {
     private(set) var systemSampleCount = 0
     private(set) var systemLevel: Float = 0
 
-    /// The live transcript of the mixed mic+system audio, attributed by speaker.
+    /// The live transcript: mic and system each transcribed on their own track,
+    /// attributed by channel (mic = you, system = remote).
     private(set) var transcript = LiveTranscript()
 
     /// The authoritative transcript from the final pass, shown once a recording
@@ -42,7 +42,8 @@ final class CaptureModel {
 
     private let microphone = MicrophoneCapture()
     private let system = SystemAudioCapture()
-    private let transcriber = AppleSpeechTranscriber(source: .microphone)
+    private let micTranscriber = AppleSpeechTranscriber(source: .microphone)
+    private let systemTranscriber = AppleSpeechTranscriber(source: .system)
     private let diarizer: any Diarizer = SortformerLiveDiarizer()
     private var recording: Task<Void, Never>?
 
@@ -56,11 +57,8 @@ final class CaptureModel {
         makeTranscriber: { ParakeetTranscriber(source: $0) }
     )
 
-    // Per-segment speaker attribution. Energy envelopes of both tracks decide
-    // you-vs-remote; the diarizer timeline names the remote speaker.
-    private let labeler = SpeakerLabeler()
-    private var micEnergy = EnergyTrack()
-    private var systemEnergy = EnergyTrack()
+    /// The diarizer's running split of the system track into remote speaker slots;
+    /// names each live system segment's remote slot.
     private var remoteSpeakers = SpeakerTimeline()
     /// End of the latest audio seen, for attributing range-less volatile guesses.
     private var latestTime: Duration = .zero
@@ -80,8 +78,6 @@ final class CaptureModel {
         transcript = LiveTranscript()
         finalTranscript = nil
         finalizeStatus = nil
-        micEnergy = EnergyTrack()
-        systemEnergy = EnergyTrack()
         remoteSpeakers = SpeakerTimeline()
         latestTime = .zero
         errorMessage = nil
@@ -95,26 +91,27 @@ final class CaptureModel {
                 let micWriter = try session.writer(for: .microphone)
                 let systemWriter = try session.writer(for: .system)
 
-                // One mixer sums both tracks for the single live transcriber;
-                // claim its output stream before the pumps start feeding it. A
-                // separate stream fans the system track to the diarizer (remote
-                // speaker splitting runs on the system track only — §6).
-                let mixer = AudioMixer()
-                let mixed = await mixer.output()
+                // Each track feeds its own live transcriber on a private stream —
+                // claim both before the pumps start feeding them. A third stream
+                // fans the system track to the diarizer (remote speaker splitting
+                // runs on the system track only — §6).
+                let (micAudio, micFeed) = AsyncStream<AudioFrame>.makeStream()
+                let (systemAudio, systemFeed) = AsyncStream<AudioFrame>.makeStream()
                 let (remoteAudio, remoteFeed) = AsyncStream<AudioFrame>.makeStream()
 
-                // Transcribe the mix and diarize the system track while both
-                // tracks are captured, metered, stored, mixed, and (system only)
-                // fed to the diarizer. Each loop ends when its source finishes.
+                // Transcribe each track and diarize the system track while both
+                // tracks are captured, metered, stored, and fanned to their
+                // recognizers. Each loop ends when its source finishes.
                 await withTaskGroup(of: Void.self) { group in
-                    group.addTask { await self.transcribeMixed(mixed) }
+                    group.addTask { await self.transcribe(micAudio, source: .microphone) }
+                    group.addTask { await self.transcribe(systemAudio, source: .system) }
                     group.addTask { await self.diarizeRemote(remoteAudio) }
                     group.addTask {
                         await self.pump(
                             microphone,
                             into: micWriter,
                             source: .microphone,
-                            mixer: mixer,
+                            transcriberFeed: micFeed,
                             diarizerFeed: nil
                         )
                     }
@@ -123,7 +120,7 @@ final class CaptureModel {
                             system,
                             into: systemWriter,
                             source: .system,
-                            mixer: mixer,
+                            transcriberFeed: systemFeed,
                             diarizerFeed: remoteFeed
                         )
                     }
@@ -184,24 +181,23 @@ final class CaptureModel {
         }
     }
 
-    /// Meter, persist, and mix one track's frames until its stream finishes.
-    /// Each frame fans out to the durable writer (storage), the shared
-    /// ``AudioMixer`` (live transcript), and — for the system track — the
-    /// diarizer feed (remote-speaker splitting). A write failure surfaces its
-    /// message without tearing down capture or the other track. On end, the
-    /// track is marked finished on the mixer and the diarizer feed is closed.
+    /// Meter, persist, and fan out one track's frames until its stream finishes.
+    /// Each frame goes to the durable writer (storage), this track's live
+    /// transcriber, and — for the system track — the diarizer feed (remote-speaker
+    /// splitting). A write failure surfaces its message without tearing down
+    /// capture or the other track. On end, both downstream streams are closed.
     private func pump(
         _ capture: any AudioCapture,
         into writer: DurableAACWriter,
         source: CaptureSource,
-        mixer: AudioMixer,
+        transcriberFeed: AsyncStream<AudioFrame>.Continuation,
         diarizerFeed: AsyncStream<AudioFrame>.Continuation?
     ) async {
         do {
             let frames = try await capture.start()
             for await frame in frames {
                 update(source, with: frame)
-                await mixer.feed(source, frame.samples)
+                transcriberFeed.yield(frame)
                 diarizerFeed?.yield(frame)
                 do {
                     try await writer.append(frame)
@@ -214,30 +210,44 @@ final class CaptureModel {
         } catch {
             errorMessage = "\(source.rawValue): \(error)"
         }
+        transcriberFeed.finish()
         diarizerFeed?.finish()
-        await mixer.finish(source)
     }
 
-    /// Drain the mixed transcriber's segments into the live transcript,
-    /// attributing each to a speaker. Transcription failures (e.g. denied speech
-    /// permission) surface as a message and never affect capture or storage.
-    private func transcribeMixed(_ frames: AsyncStream<AudioFrame>) async {
+    /// Drain one track's transcriber into the live transcript, attributing each
+    /// segment by channel. Both transcribers update `transcript` on the main
+    /// actor, so their interleaved segments never race. Transcription failures
+    /// (e.g. denied speech permission) surface as a message and never affect
+    /// capture or storage.
+    private func transcribe(_ frames: AsyncStream<AudioFrame>, source: CaptureSource) async {
+        let transcriber = source == .microphone ? micTranscriber : systemTranscriber
         do {
             for try await segment in try await transcriber.transcribe(frames) {
-                let label = labeler.label(
-                    segment: attributionWindow(for: segment),
-                    mic: micEnergy,
-                    system: systemEnergy,
-                    remoteSpeakers: remoteSpeakers
-                )
+                let label = speakerLabel(for: source, segment: segment)
                 if segment.isFinal {
-                    transcript.appendFinal(segment.text, label: label)
+                    transcript.appendFinal(segment.text, label: label, source: source)
                 } else {
-                    transcript.setVolatile(segment.text, label: label)
+                    transcript.setVolatile(segment.text, label: label, source: source)
                 }
             }
         } catch {
-            errorMessage = "transcribe: \(error)"
+            errorMessage = "transcribe \(source.rawValue): \(error)"
+        }
+    }
+
+    /// Attribute a segment by channel: the mic is always *you*; a system segment
+    /// takes the remote slot the diarizer says dominated its window (slot 0 until
+    /// diarization has split anyone out).
+    private func speakerLabel(
+        for source: CaptureSource,
+        segment: TranscriptSegment
+    ) -> SpeakerLabel {
+        switch source {
+        case .microphone:
+            return .you
+        case .system:
+            let slot = remoteSpeakers.dominantSpeaker(in: attributionWindow(for: segment)) ?? 0
+            return .remote(slot)
         }
     }
 
@@ -270,12 +280,10 @@ final class CaptureModel {
             micFrameCount += 1
             micSampleCount += frame.samples.count
             micLevel = Self.smooth(micLevel, toward: frame.meterLevel())
-            micEnergy.record(frame)
         case .system:
             systemFrameCount += 1
             systemSampleCount += frame.samples.count
             systemLevel = Self.smooth(systemLevel, toward: frame.meterLevel())
-            systemEnergy.record(frame)
         }
         latestTime = Swift.max(latestTime, frame.startOffset + frame.duration)
     }
