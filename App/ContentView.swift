@@ -14,6 +14,10 @@ import SwiftUI
 /// always *you*, and the system track is the remote — split into speaker slots by
 /// a ``Diarizer`` (FluidAudio Sortformer) running on that track, so each remote
 /// segment takes the slot that dominated its window. See DESIGN.md §6.
+///
+/// On speakers the remote echoes back into the mic, so ``EchoSuppressor`` drops
+/// mic speech that repeats recent remote speech — the same stopgap the final-pass
+/// merge uses — so the remote doesn't show up as the user. See DESIGN.md §5.
 @MainActor
 @Observable
 final class CaptureModel {
@@ -63,6 +67,17 @@ final class CaptureModel {
     /// End of the latest audio seen, for attributing range-less volatile guesses.
     private var latestTime: Duration = .zero
 
+    /// A rolling window of recent finalized remote speech, used to suppress the
+    /// remote's echo on the mic track live (you're on speakers) the same way the
+    /// final-pass merge does. Pruned to the last few seconds — echo lags its
+    /// source by far less than that.
+    private var recentRemoteSpeech: [TranscriptSegment] = []
+    /// The remote's current in-flight guess, included in the echo check so an echo
+    /// is caught even before the remote line finalizes.
+    private var remoteVolatile: TranscriptSegment?
+    /// How far back ``recentRemoteSpeech`` keeps remote speech for echo matching.
+    private static let echoMemory: Duration = .seconds(8)
+
     func toggle() {
         if isRecording { stop() } else { start() }
     }
@@ -79,6 +94,8 @@ final class CaptureModel {
         finalTranscript = nil
         finalizeStatus = nil
         remoteSpeakers = SpeakerTimeline()
+        recentRemoteSpeech = []
+        remoteVolatile = nil
         latestTime = .zero
         errorMessage = nil
 
@@ -223,11 +240,9 @@ final class CaptureModel {
         let transcriber = source == .microphone ? micTranscriber : systemTranscriber
         do {
             for try await segment in try await transcriber.transcribe(frames) {
-                let label = speakerLabel(for: source, segment: segment)
-                if segment.isFinal {
-                    transcript.appendFinal(segment.text, label: label, source: source)
-                } else {
-                    transcript.setVolatile(segment.text, label: label, source: source)
+                switch source {
+                case .system: ingestRemote(segment)
+                case .microphone: ingestMic(segment)
                 }
             }
         } catch {
@@ -235,20 +250,57 @@ final class CaptureModel {
         }
     }
 
-    /// Attribute a segment by channel: the mic is always *you*; a system segment
-    /// takes the remote slot the diarizer says dominated its window (slot 0 until
-    /// diarization has split anyone out).
-    private func speakerLabel(
-        for source: CaptureSource,
-        segment: TranscriptSegment
-    ) -> SpeakerLabel {
-        switch source {
-        case .microphone:
-            return .you
-        case .system:
-            let slot = remoteSpeakers.dominantSpeaker(in: attributionWindow(for: segment)) ?? 0
-            return .remote(slot)
+    /// Add a remote (system-track) segment, tagged with the slot the diarizer says
+    /// dominated its window, remembering finalized remote speech (and the in-flight
+    /// guess) so the mic track can suppress its echo.
+    private func ingestRemote(_ segment: TranscriptSegment) {
+        let slot = remoteSpeakers.dominantSpeaker(in: attributionWindow(for: segment)) ?? 0
+        if segment.isFinal {
+            remoteVolatile = nil
+            recordRemoteSpeech(segment)
+            transcript.appendFinal(segment.text, label: .remote(slot), source: .system)
+        } else {
+            remoteVolatile = segment
+            transcript.setVolatile(segment.text, label: .remote(slot), source: .system)
         }
+    }
+
+    /// Add a mic segment as *you* — unless it's the remote echoing through the
+    /// speakers back into the mic, which is dropped (clearing any tentative echo
+    /// already shown) so the remote's words don't appear as the user's.
+    private func ingestMic(_ segment: TranscriptSegment) {
+        if isRemoteEcho(segment) {
+            transcript.setVolatile("", label: .you, source: .microphone)
+        } else if segment.isFinal {
+            transcript.appendFinal(segment.text, label: .you, source: .microphone)
+        } else {
+            transcript.setVolatile(segment.text, label: .you, source: .microphone)
+        }
+    }
+
+    /// Whether a mic segment is an echo of recent or in-flight remote speech.
+    private func isRemoteEcho(_ segment: TranscriptSegment) -> Bool {
+        let window = attributionWindow(for: segment)
+        var remote = recentRemoteSpeech
+        if let remoteVolatile {
+            // The in-flight remote guess has no settled range; span the window
+            // under test so it can overlap and match.
+            remote.append(TranscriptSegment(
+                source: .system,
+                text: remoteVolatile.text,
+                range: window,
+                isFinal: true
+            ))
+        }
+        return EchoSuppressor(system: remote).isEcho(text: segment.text, range: window)
+    }
+
+    /// Remember a finalized remote segment for echo matching, dropping speech
+    /// older than ``echoMemory`` so the buffer stays small.
+    private func recordRemoteSpeech(_ segment: TranscriptSegment) {
+        recentRemoteSpeech.append(segment)
+        let cutoff = latestTime - Self.echoMemory
+        recentRemoteSpeech.removeAll { $0.end < cutoff }
     }
 
     /// Keep the latest remote-speaker timeline as the diarizer refines it.
