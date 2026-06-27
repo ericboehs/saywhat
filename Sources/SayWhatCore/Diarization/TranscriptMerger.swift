@@ -10,11 +10,6 @@ import Foundation
 /// its window — and coalesces consecutive same-speaker turns into one block, the
 /// way a reader expects to see a conversation. DESIGN.md §3, §6.
 ///
-/// When the user is on speakers rather than headphones the remote bleeds into
-/// the mic, so its words also land on the mic track; the merge suppresses those
-/// echoes via ``EchoSuppressor`` so remote speech isn't double-counted as the
-/// user's. A pragmatic stopgap short of opt-in acoustic echo cancellation.
-///
 /// Pure and deterministic: no models, no I/O. The ML adapters that produce its
 /// inputs live behind ``Transcriber`` / ``Diarizer``; this is the unit-testable
 /// seam where their outputs come together.
@@ -31,7 +26,10 @@ public struct TranscriptMerger: Sendable {
     ///     (default 1.5s — comfortably past a between-sentence breath).
     ///   - maxParagraph: soft cap after which a paragraph breaks at the next
     ///     sentence end (default 20s).
-    public init(paragraphPause: Duration = .seconds(1.5), maxParagraph: Duration = .seconds(20)) {
+    public init(
+        paragraphPause: Duration = .seconds(1.5),
+        maxParagraph: Duration = .seconds(20)
+    ) {
         self.paragraphPause = paragraphPause
         self.maxParagraph = maxParagraph
     }
@@ -53,20 +51,29 @@ public struct TranscriptMerger: Sendable {
         remoteSpeakers: SpeakerTimeline,
         names: [Int: String] = [:]
     ) -> Transcript {
-        let suppressor = EchoSuppressor(system: system)
-
-        // Explode every surviving segment into time-stamped atoms (one per word
-        // when the batch ASR gave timings, else the whole segment), so a short
-        // interjection that lands *inside* a long turn interleaves by time rather
-        // than sorting wholesale before or after it. This is what lets a quick
-        // "mm-hmm" split a continuous remote monologue into before/you/after.
+        // Build the atoms the merge orders and coalesces, asymmetrically by track.
+        //
+        // The mic is *you* — the interjector in this app's core use (you react to
+        // remote speakers). Each mic segment stays one **whole** atom: it lands at
+        // its start time and splits the remote run there, rather than shredding. If
+        // both tracks were exploded to words, two genuinely overlapping turns (you
+        // talking over a long remote stretch) would interleave word-by-word into an
+        // unreadable salad.
+        //
+        // The system track is exploded **per word**, because each word carries its
+        // own remote-speaker slot from diarization — a second remote speaker's quick
+        // line inside one ASR segment must become its own turn. Consecutive same-
+        // speaker words re-coalesce below, so a remote turn that *isn't* interrupted
+        // still renders as one block; a whole mic atom landing mid-run splits it.
         var atoms: [Atom] = []
         for segment in mic where segment.isFinal {
-            // Drop acoustic echo: the remote played through the speakers and back
-            // into the mic, so its words land on the mic track too. Suppressing it
-            // per segment keeps a genuine interjection said in the same breath.
-            guard !suppressor.isEcho(text: segment.text, range: segment.range) else { continue }
-            atoms.append(contentsOf: Self.atoms(of: segment, label: .you, name: nil))
+            atoms.append(Atom(
+                label: .you,
+                name: nil,
+                text: segment.text,
+                range: segment.range,
+                words: segment.words
+            ))
         }
         for segment in system where segment.isFinal {
             atoms.append(contentsOf: Self.remoteAtoms(
@@ -75,7 +82,13 @@ public struct TranscriptMerger: Sendable {
                 names: names
             ))
         }
-        atoms.sort { $0.range.lowerBound < $1.range.lowerBound }
+        // Order by start time; tie-break on end time so two words that begin
+        // together stay deterministic across runs.
+        atoms.sort { lhs, rhs in
+            lhs.range.lowerBound != rhs.range.lowerBound
+                ? lhs.range.lowerBound < rhs.range.lowerBound
+                : lhs.range.upperBound < rhs.range.upperBound
+        }
 
         var utterances: [Transcript.Utterance] = []
         for atom in atoms {
@@ -171,29 +184,6 @@ public struct TranscriptMerger: Sendable {
             return [atom(text: segment.text, range: segment.range, words: [])]
         }
         return segment.words.map { atom(text: $0.text, range: $0.range, words: [$0]) }
-    }
-
-    /// Split a labeled segment into the time-ordered atoms the merge interleaves:
-    /// one per word when the segment carries word timings (so another speaker can
-    /// break in mid-turn), otherwise the whole segment as a single atom.
-    private static func atoms(
-        of segment: TranscriptSegment,
-        label: SpeakerLabel,
-        name: String?
-    ) -> [Atom] {
-        guard !segment.words.isEmpty else {
-            let whole = Atom(
-                label: label,
-                name: name,
-                text: segment.text,
-                range: segment.range,
-                words: []
-            )
-            return [whole]
-        }
-        return segment.words.map { word in
-            Atom(label: label, name: name, text: word.text, range: word.range, words: [word])
-        }
     }
 
     /// A single time-stamped unit the merge sorts and coalesces over: one word
