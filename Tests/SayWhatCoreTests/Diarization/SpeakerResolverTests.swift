@@ -65,7 +65,19 @@ struct SpeakerResolverTests {
         )
 
         #expect(resolution.bySlot[0] == eric)
-        #expect(resolution.bySlot[1]?.name == "Speaker 2")
+        // The newcomer takes the first free number; "Eric" isn't a "Speaker N".
+        #expect(resolution.bySlot[1]?.name == "Speaker 1")
+        #expect(resolution.minted.map(\.name) == ["Speaker 1"])
+    }
+
+    @Test("a newcomer skips numbers already taken by enrolled Speaker N names")
+    func mintsUniqueAgainstExistingSpeakers() {
+        // The directory already has auto-named speakers from prior meetings.
+        let existing = [voiceprint("Speaker 1", [1, 0]), voiceprint("Speaker 3", [0, 1])]
+        // [-1, -1] is dissimilar to both axes, so it matches nobody and mints.
+        let resolution = SpeakerResolver().resolve([0: [-1, -1]], against: existing)
+
+        // Smallest free number, not a duplicate "Speaker 1".
         #expect(resolution.minted.map(\.name) == ["Speaker 2"])
     }
 
@@ -86,7 +98,8 @@ struct SpeakerResolverTests {
             mintName: { "Guest \($0)" }
         )
 
-        #expect(resolution.bySlot[2]?.name == "Guest 2")
+        // The closure receives the directory-unique number (first free is 1).
+        #expect(resolution.bySlot[2]?.name == "Guest 1")
     }
 
     @Test("no observations resolve to nothing")

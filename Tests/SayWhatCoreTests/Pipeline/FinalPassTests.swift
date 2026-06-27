@@ -231,9 +231,9 @@ struct FinalPassTests {
 
         let transcript = try await pass.run(session)
 
-        #expect(transcript.utterances.map(\.speakerName) == ["Eric", "Speaker 2"])
+        #expect(transcript.utterances.map(\.speakerName) == ["Eric", "Speaker 1"])
         // The newcomer is persisted so the same voice is recognized next time.
-        #expect(try store.all().map(\.name).sorted() == ["Eric", "Speaker 2"])
+        #expect(try store.all().map(\.name).sorted() == ["Eric", "Speaker 1"])
     }
 
     @Test("a diarizer that surfaces no embeddings leaves identities unresolved")

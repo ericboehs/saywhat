@@ -43,11 +43,14 @@ public struct SpeakerResolver: Sendable {
     /// - Parameters:
     ///   - observations: slot index → that slot's observed 256-dim embedding.
     ///   - directory: the enrolled voiceprints to match against.
-    ///   - mintName: name for a new speaker at a given slot (default `Speaker N`).
+    ///   - mintName: name for a new speaker, given a directory-unique number
+    ///     (default `Speaker N`). The number is the smallest positive integer not
+    ///     already taken by an enrolled `Speaker N`, so an auto-named newcomer
+    ///     never duplicates a name that already exists.
     public func resolve(
         _ observations: [Int: [Float]],
         against directory: [Voiceprint],
-        mintName: (Int) -> String = { "Speaker \($0 + 1)" }
+        mintName: (Int) -> String = { "Speaker \($0)" }
     ) -> SpeakerResolution {
         let candidates = rankedCandidates(observations, directory)
 
@@ -62,16 +65,38 @@ public struct SpeakerResolver: Sendable {
         }
 
         // Mint a new voiceprint for every slot nobody enrolled claimed, in slot
-        // order so the assignment (and any "Speaker N" names) is deterministic.
+        // order so the assignment is deterministic. Each auto name takes the next
+        // directory-unique "Speaker N" — previously the number came from the
+        // per-meeting slot, so every meeting's first newcomer became "Speaker 1".
+        var usedNumbers = Set(directory.compactMap { Self.speakerNumber($0.name) })
         var minted: [Voiceprint] = []
         for slot in observations.keys.sorted() {
             guard bySlot[slot] == nil, let embedding = observations[slot] else { continue }
-            let fresh = Voiceprint(name: mintName(slot), embedding: embedding)
+            let number = Self.nextFreeNumber(&usedNumbers)
+            let fresh = Voiceprint(name: mintName(number), embedding: embedding)
             bySlot[slot] = fresh
             minted.append(fresh)
         }
 
         return SpeakerResolution(bySlot: bySlot, minted: minted)
+    }
+
+    /// The `N` in an auto-generated `Speaker N` name, or `nil` for a custom name.
+    private static func speakerNumber(_ name: String) -> Int? {
+        let prefix = "Speaker "
+        guard name.hasPrefix(prefix) else { return nil }
+        return Int(name.dropFirst(prefix.count))
+    }
+
+    /// The smallest positive integer not in `used`, claiming it so a run of mints
+    /// gets distinct numbers.
+    private static func nextFreeNumber(_ used: inout Set<Int>) -> Int {
+        var number = 1
+        while used.contains(number) {
+            number += 1
+        }
+        used.insert(number)
+        return number
     }
 
     /// One acceptable (slot, enrolled-speaker) pairing and its similarity.
