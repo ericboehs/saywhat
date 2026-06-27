@@ -2,11 +2,12 @@ import Foundation
 import SayWhatCore
 import SwiftUI
 
-/// The live transcript of the mixed audio, grouped into speaker turns. Committed
-/// (final) text lands in ``Block``s — consecutive finals from the same speaker
-/// merge into one paragraph — and the in-flight volatile guess trails as its own
-/// tentative block. One recognizer drives it, so text only ever appends; nothing
-/// already shown is retracted.
+/// The live transcript, grouped into speaker turns. Committed (final) text lands
+/// in ``Block``s — consecutive finals from the same speaker merge into one
+/// paragraph — and each track's in-flight volatile guess trails as its own
+/// tentative block. Two recognizers drive it (one per track, attributed by
+/// channel), so the mic and system tracks can each carry a live tail at once
+/// without clobbering the other; committed text only ever appends.
 struct LiveTranscript: Equatable {
     /// One speaker's contiguous run of committed text.
     struct Block: Equatable, Identifiable {
@@ -15,20 +16,37 @@ struct LiveTranscript: Equatable {
         var text: String
     }
 
-    private(set) var blocks: [Block] = []
-    /// The latest in-flight volatile guess (empty between utterances).
-    private(set) var volatile = ""
-    /// Best-guess speaker for the volatile tail.
-    private(set) var volatileLabel: SpeakerLabel = .you
+    /// One track's latest in-flight guess. Keyed and identified by its source so
+    /// the mic and system recognizers update independent tails.
+    struct Volatile: Equatable, Identifiable {
+        var id: CaptureSource {
+            source
+        }
 
-    var isEmpty: Bool {
-        blocks.isEmpty && volatile.isEmpty
+        let source: CaptureSource
+        var label: SpeakerLabel
+        var text: String
     }
 
-    /// Commit a final segment: extend the last block if the same speaker still
-    /// holds the floor, otherwise start a new one. Clears the volatile tail.
-    mutating func appendFinal(_ text: String, label: SpeakerLabel) {
-        volatile = ""
+    private(set) var blocks: [Block] = []
+    /// Each track's latest in-flight guess (a track is absent between
+    /// utterances). The two recognizers run concurrently, so both may be present.
+    private(set) var volatileBySource: [CaptureSource: Volatile] = [:]
+
+    var isEmpty: Bool {
+        blocks.isEmpty && volatileBySource.isEmpty
+    }
+
+    /// The in-flight guesses in a stable order (mic before system) for rendering.
+    var volatiles: [Volatile] {
+        CaptureSource.allCases.compactMap { volatileBySource[$0] }
+    }
+
+    /// Commit a final segment from one track: extend the last block if the same
+    /// speaker still holds the floor, otherwise start a new one. Clears that
+    /// track's volatile tail (the other track's is left untouched).
+    mutating func appendFinal(_ text: String, label: SpeakerLabel, source: CaptureSource) {
+        volatileBySource[source] = nil
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
         if var last = blocks.last, last.label == label {
@@ -39,10 +57,14 @@ struct LiveTranscript: Equatable {
         }
     }
 
-    /// Replace the in-flight guess and its speaker.
-    mutating func setVolatile(_ text: String, label: SpeakerLabel) {
-        volatile = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        volatileLabel = label
+    /// Replace one track's in-flight guess; an empty guess clears its tail.
+    mutating func setVolatile(_ text: String, label: SpeakerLabel, source: CaptureSource) {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty {
+            volatileBySource[source] = nil
+        } else {
+            volatileBySource[source] = Volatile(source: source, label: label, text: trimmed)
+        }
     }
 }
 
@@ -111,12 +133,8 @@ struct LiveTranscriptView: View {
                         ForEach(transcript.blocks) { block in
                             SpeakerBlock(label: block.label, text: block.text)
                         }
-                        if !transcript.volatile.isEmpty {
-                            SpeakerBlock(
-                                label: transcript.volatileLabel,
-                                text: transcript.volatile,
-                                volatile: true
-                            )
+                        ForEach(transcript.volatiles) { guess in
+                            SpeakerBlock(label: guess.label, text: guess.text, volatile: true)
                         }
                     }
                     Color.clear.frame(height: 1).id(liveEdge)
