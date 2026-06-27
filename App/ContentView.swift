@@ -367,6 +367,12 @@ struct ContentView: View {
         VStack(spacing: 16) {
             Text("Say What")
                 .font(.largeTitle.bold())
+            if let build = BuildStamp.label {
+                Text(build)
+                    .font(.caption2)
+                    .monospacedDigit()
+                    .foregroundStyle(.tertiary)
+            }
             Text(model.isRecording ? "Recording…" : "Idle")
                 .foregroundStyle(.secondary)
 
