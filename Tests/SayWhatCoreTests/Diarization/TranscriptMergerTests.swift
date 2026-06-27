@@ -159,6 +159,20 @@ struct TranscriptMergerTests {
         #expect(result.utterances.map(\.text) == ["real words"])
     }
 
+    @Test("strips stray leading punctuation the ASR strands at a segment's start")
+    func stripsStrayLeadingPunctuation() {
+        // The recognizer sometimes prepends a stranded "." (a trailing mark that
+        // floated off the prior utterance); the turn must not open on it.
+        let mic = [segment(.microphone, ". All right, I think that would help", from: 0, to: 2)]
+        let result = TranscriptMerger().merge(
+            mic: mic,
+            system: [],
+            remoteSpeakers: SpeakerTimeline()
+        )
+
+        #expect(result.utterances.map(\.text) == ["All right, I think that would help"])
+    }
+
     @Test("remote turn with no diarized coverage falls back to slot 0")
     func remoteFallback() {
         let system = [segment(.system, "who am i", from: 5, to: 6)]
