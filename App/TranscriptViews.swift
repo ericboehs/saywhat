@@ -98,42 +98,78 @@ struct SpeakerBlock: View {
     /// slot label when the final pass recognized the speaker; `nil` falls back.
     var name: String?
     var volatile: Bool = false
+    /// When this turn started, as a `M:SS` timecode shown beside the speaker
+    /// name; `nil` (the live view) shows no timestamp.
+    var timestamp: String?
     /// Per-word timings for this turn; when present the text is rendered word by
-    /// word so one can be highlighted during playback.
+    /// word so the spoken one can be highlighted during playback.
     var words: [WordTiming] = []
     /// The index of the word the playhead is on, highlighted; `nil` highlights none.
     var activeWord: Int?
+    /// Seek the player to a word's start when it's clicked. `nil` disables seeking.
+    var onSeek: ((Duration) -> Void)?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
-            Text(name ?? label.displayName)
-                .font(.caption.bold())
-                .foregroundStyle(label.tint)
+            HStack(spacing: 6) {
+                Text(name ?? label.displayName)
+                    .font(.caption.bold())
+                    .foregroundStyle(label.tint)
+                if let timestamp {
+                    Text(timestamp)
+                        .font(.caption2)
+                        .monospacedDigit()
+                        .foregroundStyle(.tertiary)
+                }
+            }
             content
                 .foregroundStyle(volatile ? .secondary : .primary)
                 .italic(volatile)
+                .tint(volatile ? .secondary : .primary)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .multilineTextAlignment(.leading)
+                // One wrapping, selectable `Text`: drag to select/copy while
+                // paused. Each word is a `saywhat://seek` link so a click seeks —
+                // handled here, never leaving the app.
                 .textSelection(.enabled)
+                .environment(\.openURL, OpenURLAction { url in seek(url) })
         }
     }
 
-    /// The turn's text — highlighting the active word when word timings exist,
-    /// otherwise the plain string.
+    /// The turn's text — each word a link carrying its start time, the active word
+    /// background-highlighted. One `Text` so it wraps and stays selectable; the
+    /// link runs make words clickable without splitting them into separate views
+    /// (which would defeat wrapping).
     private var content: Text {
         guard !words.isEmpty else { return Text(text) }
         var attributed = AttributedString()
         for (index, word) in words.enumerated() {
             if index > 0 { attributed += AttributedString(" ") }
             var run = AttributedString(word.text)
+            // Override the link tint so words read as plain transcript text.
+            run.foregroundColor = volatile ? .secondary : .primary
+            if onSeek != nil {
+                run.link = URL(string: "saywhat://seek?t=\(word.range.lowerBound.seconds)")
+            }
             if index == activeWord {
+                // Highlight only — no bold, which would change the word's width
+                // and reflow the line as the playhead moves.
                 run.backgroundColor = label.tint.opacity(0.3)
-                run.foregroundColor = .primary
-                run.inlinePresentationIntent = .stronglyEmphasized
             }
             attributed += run
         }
         return Text(attributed)
+    }
+
+    /// Handle a word-link click by seeking the player to its encoded start time.
+    private func seek(_ url: URL) -> OpenURLAction.Result {
+        let items = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems
+        guard url.scheme == "saywhat",
+              let value = items?.first(where: { $0.name == "t" })?.value,
+              let seconds = Double(value)
+        else { return .systemAction }
+        onSeek?(.seconds(seconds))
+        return .handled
     }
 }
 
@@ -179,27 +215,40 @@ struct FinalTranscriptView: View {
     /// The word the playhead is on, highlighted karaoke-style; `nil` when not
     /// playing or when the transcript has no word timings.
     var cursor: Transcript.WordCursor?
+    /// Seek the player when a word is tapped.
+    var onSeek: ((Duration) -> Void)?
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 12) {
-                if transcript.isEmpty {
-                    Text("No speech detected.")
-                        .foregroundStyle(.tertiary)
-                } else {
-                    ForEach(transcript.utterances) { utterance in
-                        SpeakerBlock(
-                            label: utterance.speaker,
-                            text: utterance.text,
-                            name: utterance.speakerName,
-                            words: utterance.words,
-                            activeWord: cursor?.utteranceID == utterance.id ? cursor?
-                                .wordIndex : nil
-                        )
+        ScrollViewReader { proxy in
+            ScrollView {
+                VStack(alignment: .leading, spacing: 12) {
+                    if transcript.isEmpty {
+                        Text("No speech detected.")
+                            .foregroundStyle(.tertiary)
+                    } else {
+                        ForEach(transcript.utterances) { utterance in
+                            SpeakerBlock(
+                                label: utterance.speaker,
+                                text: utterance.text,
+                                name: utterance.speakerName,
+                                timestamp: SayWhat.timecode(seconds: Int(utterance.start.seconds)),
+                                words: utterance.words,
+                                activeWord: cursor?.utteranceID == utterance.id ? cursor?
+                                    .wordIndex : nil,
+                                onSeek: onSeek
+                            )
+                            .id(utterance.id)
+                        }
                     }
                 }
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
+            // Follow the playhead, but only when it moves to a new turn — scrolling
+            // on every word would fight the reader and never settle.
+            .onChange(of: cursor?.utteranceID) { _, utteranceID in
+                guard let utteranceID else { return }
+                withAnimation { proxy.scrollTo(utteranceID, anchor: .center) }
+            }
         }
     }
 }

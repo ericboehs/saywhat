@@ -19,7 +19,22 @@ import Foundation
 /// inputs live behind ``Transcriber`` / ``Diarizer``; this is the unit-testable
 /// seam where their outputs come together.
 public struct TranscriptMerger: Sendable {
-    public init() {}
+    /// A silence between consecutive same-speaker words long enough to end the
+    /// current paragraph and start a new (separately timestamped) one.
+    private let paragraphPause: Duration
+    /// Once a paragraph runs this long, it breaks at the next sentence boundary so
+    /// an uninterrupted monologue doesn't render as one unreadable wall of text.
+    private let maxParagraph: Duration
+
+    /// - Parameters:
+    ///   - paragraphPause: pause between words that starts a new paragraph
+    ///     (default 1.5s — comfortably past a between-sentence breath).
+    ///   - maxParagraph: soft cap after which a paragraph breaks at the next
+    ///     sentence end (default 20s).
+    public init(paragraphPause: Duration = .seconds(1.5), maxParagraph: Duration = .seconds(20)) {
+        self.paragraphPause = paragraphPause
+        self.maxParagraph = maxParagraph
+    }
 
     /// Combine final mic + system segments into the authoritative transcript.
     ///
@@ -40,61 +55,114 @@ public struct TranscriptMerger: Sendable {
     ) -> Transcript {
         let suppressor = EchoSuppressor(system: system)
 
-        var labeled: [LabeledSegment] = []
+        // Explode every surviving segment into time-stamped atoms (one per word
+        // when the batch ASR gave timings, else the whole segment), so a short
+        // interjection that lands *inside* a long turn interleaves by time rather
+        // than sorting wholesale before or after it. This is what lets a quick
+        // "mm-hmm" split a continuous remote monologue into before/you/after.
+        var atoms: [Atom] = []
         for segment in mic where segment.isFinal {
             // Drop acoustic echo: the remote played through the speakers and back
             // into the mic, so its words land on the mic track too. Suppressing it
             // per segment keeps a genuine interjection said in the same breath.
             guard !suppressor.isEcho(text: segment.text, range: segment.range) else { continue }
-            labeled.append(LabeledSegment(label: .you, name: nil, segment: segment))
+            atoms.append(contentsOf: Self.atoms(of: segment, label: .you, name: nil))
         }
         for segment in system where segment.isFinal {
             let slot = remoteSpeakers.dominantSpeaker(in: segment.range) ?? 0
-            labeled.append(LabeledSegment(
+            atoms.append(contentsOf: Self.atoms(
+                of: segment,
                 label: .remote(slot),
-                name: names[slot],
-                segment: segment
+                name: names[slot]
             ))
         }
-        labeled.sort { $0.segment.start < $1.segment.start }
+        atoms.sort { $0.range.lowerBound < $1.range.lowerBound }
 
         var utterances: [Transcript.Utterance] = []
-        for entry in labeled {
-            let label = entry.label
-            let text = entry.segment.text.trimmingCharacters(in: .whitespacesAndNewlines)
+        for atom in atoms {
+            let text = atom.text.trimmingCharacters(in: .whitespacesAndNewlines)
             // Require real content: the batch ASR sometimes emits a lone "."
             // which would otherwise render as an empty, mislabeled speaker turn.
             guard text.contains(where: { $0.isLetter || $0.isNumber }) else { continue }
-            if let last = utterances.last, last.speaker == label {
+            let last = utterances.last
+            let extend = last.map { $0.speaker == atom.label && !breaksParagraph(
+                after: $0,
+                before: atom
+            ) } ?? false
+            if extend, let last {
                 // Same speaker still holds the floor — extend their block,
                 // concatenating the word timings in spoken order.
                 utterances[utterances.count - 1] = Transcript.Utterance(
                     id: last.id,
-                    speaker: label,
+                    speaker: atom.label,
                     speakerName: last.speakerName,
                     text: last.text + " " + text,
-                    range: last.start ..< Swift.max(last.end, entry.segment.end),
-                    words: last.words + entry.segment.words
+                    range: last.start ..< Swift.max(last.end, atom.range.upperBound),
+                    words: last.words + atom.words
                 )
             } else {
                 utterances.append(Transcript.Utterance(
                     id: utterances.count,
-                    speaker: label,
-                    speakerName: entry.name,
+                    speaker: atom.label,
+                    speakerName: atom.name,
                     text: text,
-                    range: entry.segment.range,
-                    words: entry.segment.words
+                    range: atom.range,
+                    words: atom.words
                 ))
             }
         }
         return Transcript(utterances: utterances)
     }
 
-    /// A finalized segment paired with its resolved speaker label and identity —
-    /// the intermediate the merge sorts and coalesces over.
-    private struct LabeledSegment {
+    /// Whether the next same-speaker `atom` should start a fresh paragraph rather
+    /// than extend `last`: after a real pause, or — once the paragraph is already
+    /// long — at a sentence boundary, so a monologue reads as timestamped
+    /// paragraphs instead of one wall of text.
+    private func breaksParagraph(after last: Transcript.Utterance, before atom: Atom) -> Bool {
+        if atom.range.lowerBound - last.end > paragraphPause { return true }
+        if atom.range.upperBound - last.start > maxParagraph, Self.endsSentence(last.text) {
+            return true
+        }
+        return false
+    }
+
+    /// Whether `text` ends a sentence — its last non-space character is `.`, `?`,
+    /// or `!` — used to break a long paragraph only at a clean boundary.
+    private static func endsSentence(_ text: String) -> Bool {
+        guard let last = text.reversed().first(where: { !$0.isWhitespace }) else { return false }
+        return last == "." || last == "?" || last == "!"
+    }
+
+    /// Split a labeled segment into the time-ordered atoms the merge interleaves:
+    /// one per word when the segment carries word timings (so another speaker can
+    /// break in mid-turn), otherwise the whole segment as a single atom.
+    private static func atoms(
+        of segment: TranscriptSegment,
+        label: SpeakerLabel,
+        name: String?
+    ) -> [Atom] {
+        guard !segment.words.isEmpty else {
+            let whole = Atom(
+                label: label,
+                name: name,
+                text: segment.text,
+                range: segment.range,
+                words: []
+            )
+            return [whole]
+        }
+        return segment.words.map { word in
+            Atom(label: label, name: name, text: word.text, range: word.range, words: [word])
+        }
+    }
+
+    /// A single time-stamped unit the merge sorts and coalesces over: one word
+    /// (when timings exist) or a whole segment, tagged with its speaker.
+    private struct Atom {
         let label: SpeakerLabel
         let name: String?
-        let segment: TranscriptSegment
+        let text: String
+        let range: Range<Duration>
+        let words: [WordTiming]
     }
 }

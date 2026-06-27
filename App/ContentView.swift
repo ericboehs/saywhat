@@ -23,12 +23,7 @@ import SwiftUI
 final class CaptureModel {
     private(set) var isRecording = false
 
-    private(set) var micFrameCount = 0
-    private(set) var micSampleCount = 0
     private(set) var micLevel: Float = 0
-
-    private(set) var systemFrameCount = 0
-    private(set) var systemSampleCount = 0
     private(set) var systemLevel: Float = 0
 
     /// The live transcript: mic and system each transcribed on their own track,
@@ -87,11 +82,7 @@ final class CaptureModel {
 
     private func start() {
         isRecording = true
-        micFrameCount = 0
-        micSampleCount = 0
         micLevel = 0
-        systemFrameCount = 0
-        systemSampleCount = 0
         systemLevel = 0
         transcript = LiveTranscript()
         finalTranscript = nil
@@ -339,12 +330,8 @@ final class CaptureModel {
     private func update(_ source: CaptureSource, with frame: AudioFrame) {
         switch source {
         case .microphone:
-            micFrameCount += 1
-            micSampleCount += frame.samples.count
             micLevel = Self.smooth(micLevel, toward: frame.meterLevel())
         case .system:
-            systemFrameCount += 1
-            systemSampleCount += frame.samples.count
             systemLevel = Self.smooth(systemLevel, toward: frame.meterLevel())
         }
         latestTime = Swift.max(latestTime, frame.startOffset + frame.duration)
@@ -403,20 +390,18 @@ struct ContentView: View {
             Text(model.isRecording ? "Recording…" : "Idle")
                 .foregroundStyle(.secondary)
 
-            TrackRow(
-                title: "Microphone",
-                level: model.micLevel,
-                frames: model.micFrameCount,
-                samples: model.micSampleCount,
-                active: model.isRecording
-            )
-            TrackRow(
-                title: "System audio",
-                level: model.systemLevel,
-                frames: model.systemFrameCount,
-                samples: model.systemSampleCount,
-                active: model.isRecording
-            )
+            HStack(alignment: .top, spacing: 16) {
+                TrackRow(
+                    title: "Microphone",
+                    level: model.micLevel,
+                    active: model.isRecording
+                )
+                TrackRow(
+                    title: "System audio",
+                    level: model.systemLevel,
+                    active: model.isRecording
+                )
+            }
 
             Group {
                 if let status = model.finalizeStatus {
@@ -431,7 +416,8 @@ struct ContentView: View {
                             transcript: finalTranscript,
                             cursor: model.playback.flatMap {
                                 finalTranscript.wordCursor(at: $0.currentTime)
-                            }
+                            },
+                            onSeek: { model.playback?.seek(to: $0) }
                         )
                         if let playback = model.playback {
                             PlaybackBar(playback: playback)

@@ -223,3 +223,97 @@ struct TranscriptMergerTests {
         #expect(result.utterances.first?.words.last?.range == .seconds(1) ..< .seconds(2))
     }
 }
+
+/// Word-time interleaving and paragraph breaking — the readability rules that
+/// keep a long turn from rendering as one wall of mislabeled text.
+extension TranscriptMergerTests {
+    @Test("an interjection inside a long turn splits it by word time, not wholesale")
+    func interjectionSplitsLongTurn() {
+        // The remote talks continuously 0–6s (one segment, no internal pauses);
+        // you cut in with a single word at 3s. Sorting whole segments would put
+        // the whole remote turn first and your word after — instead the word
+        // timings interleave, splitting the remote turn around the interjection.
+        let remote = TranscriptSegment(
+            source: .system,
+            text: "so the plan is we ship",
+            range: .seconds(0) ..< .seconds(6),
+            isFinal: true,
+            words: [
+                WordTiming(text: "so", range: .seconds(0) ..< .seconds(1)),
+                WordTiming(text: "the", range: .seconds(1) ..< .seconds(2)),
+                WordTiming(text: "plan", range: .seconds(2) ..< .seconds(3)),
+                WordTiming(text: "is", range: .seconds(4) ..< .seconds(5)),
+                WordTiming(text: "we", range: .seconds(5) ..< .milliseconds(5500)),
+                WordTiming(text: "ship", range: .milliseconds(5500) ..< .seconds(6)),
+            ]
+        )
+        let interjection = TranscriptSegment(
+            source: .microphone,
+            text: "wait",
+            range: .seconds(3) ..< .milliseconds(3500),
+            isFinal: true,
+            words: [WordTiming(text: "wait", range: .seconds(3) ..< .milliseconds(3500))]
+        )
+        let result = TranscriptMerger().merge(
+            mic: [interjection],
+            system: [remote],
+            remoteSpeakers: SpeakerTimeline()
+        )
+
+        #expect(result.utterances.map(\.speaker) == [.remote(0), .you, .remote(0)])
+        #expect(result.utterances.map(\.text) == ["so the plan", "wait", "is we ship"])
+    }
+
+    @Test("a real pause breaks one speaker's run into separate timestamped paragraphs")
+    func pauseBreaksParagraphs() {
+        // Same speaker, but a 3s silence between the two runs (> the 1.5s default).
+        let system = [
+            segment(.system, "first thought", from: 0, to: 2),
+            segment(.system, "second thought", from: 5, to: 7),
+        ]
+        let result = TranscriptMerger().merge(
+            mic: [],
+            system: system,
+            remoteSpeakers: SpeakerTimeline()
+        )
+
+        #expect(result.utterances.map(\.text) == ["first thought", "second thought"])
+        #expect(result.utterances.map(\.start) == [.seconds(0), .seconds(5)])
+    }
+
+    @Test("a tiny gap keeps one speaker's run in a single paragraph")
+    func smallGapKeepsParagraph() {
+        // A half-second between turns is below the pause threshold — still one block.
+        let system = [
+            segment(.system, "one", from: 0, to: 1),
+            segment(.system, "two", from: 1.5, to: 2),
+        ]
+        let result = TranscriptMerger().merge(
+            mic: [],
+            system: system,
+            remoteSpeakers: SpeakerTimeline()
+        )
+
+        #expect(result.utterances.map(\.text) == ["one two"])
+    }
+
+    @Test("a long monologue breaks at the next sentence boundary, not mid-sentence")
+    func longMonologueBreaksAtSentence() {
+        // One continuous speaker, no pause over the threshold, but past the 20s
+        // soft cap — so it splits where the prior text ended a sentence.
+        let system = [
+            segment(.system, "this is a long first part.", from: 0, to: 21),
+            segment(.system, "and here is the second part", from: 21, to: 30),
+        ]
+        let result = TranscriptMerger().merge(
+            mic: [],
+            system: system,
+            remoteSpeakers: SpeakerTimeline()
+        )
+
+        #expect(result.utterances.map(\.text) == [
+            "this is a long first part.",
+            "and here is the second part",
+        ])
+    }
+}
