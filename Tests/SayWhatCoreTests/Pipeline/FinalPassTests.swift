@@ -201,4 +201,67 @@ struct FinalPassTests {
         #expect(transcript.utterances.map(\.speaker) == [.you])
         #expect(transcript.utterances.map(\.text) == ["solo"])
     }
+
+    @Test("resolves a known speaker to their enrolled name and persists newcomers")
+    func resolvesIdentities() async throws {
+        let session = makeSession()
+        try session.createDirectory()
+        try await writeTrack(.system, in: session, seconds: 2)
+        defer { try? FileManager.default.removeItem(at: session.directory) }
+
+        let store = try VoiceprintStore()
+        try store.save(Voiceprint(name: "Eric", embedding: [1, 0]))
+
+        // Slot 0 ≈ enrolled Eric; slot 1 matches nobody and should be minted.
+        let timeline = SpeakerTimeline(
+            turns: [
+                SpeakerTurn(speaker: 0, range: .seconds(0) ..< .seconds(1)),
+                SpeakerTurn(speaker: 1, range: .seconds(1) ..< .seconds(2)),
+            ],
+            embeddings: [0: [0.99, 0.01], 1: [0, 1]]
+        )
+        let systemScript = [script(.system, "hello", 0, 1), script(.system, "hi", 1, 2)]
+        let pass = FinalPass(
+            diarizer: FakeDiarizer(timeline: timeline),
+            store: store,
+            makeTranscriber: { source in
+                FakeTranscriber(source: source, script: source == .system ? systemScript : [])
+            }
+        )
+
+        let transcript = try await pass.run(session)
+
+        #expect(transcript.utterances.map(\.speakerName) == ["Eric", "Speaker 2"])
+        // The newcomer is persisted so the same voice is recognized next time.
+        #expect(try store.all().map(\.name).sorted() == ["Eric", "Speaker 2"])
+    }
+
+    @Test("a diarizer that surfaces no embeddings leaves identities unresolved")
+    func noEmbeddingsNoNames() async throws {
+        let session = makeSession()
+        try session.createDirectory()
+        try await writeTrack(.system, in: session, seconds: 1)
+        defer { try? FileManager.default.removeItem(at: session.directory) }
+
+        let store = try VoiceprintStore()
+        try store.save(Voiceprint(name: "Eric", embedding: [1, 0]))
+
+        let timeline = SpeakerTimeline(turns: [
+            SpeakerTurn(speaker: 0, range: .seconds(0) ..< .seconds(1)),
+        ])
+        let pass = FinalPass(
+            diarizer: FakeDiarizer(timeline: timeline),
+            store: store,
+            makeTranscriber: { source in
+                FakeTranscriber(
+                    source: source,
+                    script: source == .system ? [script(.system, "hi", 0, 1)] : []
+                )
+            }
+        )
+
+        let transcript = try await pass.run(session)
+
+        #expect(transcript.utterances.first?.speakerName == nil)
+    }
 }
