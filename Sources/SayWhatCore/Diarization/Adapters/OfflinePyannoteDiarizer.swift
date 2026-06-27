@@ -90,7 +90,9 @@ public actor OfflinePyannoteDiarizer: SayWhatCore.Diarizer {
                         .seconds(Double($0.endTimeSeconds))
                 )
             }
-            return builder.timeline(from: raw)
+            // The per-speaker mean embedding (keyed by the same speakerId as the
+            // segments) drives persistent identity resolution in the final pass.
+            return builder.timeline(from: raw, speakerEmbeddings: result.speakerDatabase ?? [:])
         } catch {
             log.error("offline diarization failed: \(error.localizedDescription, privacy: .public)")
             return SpeakerTimeline()

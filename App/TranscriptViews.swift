@@ -72,11 +72,14 @@ extension SpeakerLabel {
 struct SpeakerBlock: View {
     var label: SpeakerLabel
     var text: String
+    /// A resolved persistent identity (e.g. "Eric") shown instead of the generic
+    /// slot label when the final pass recognized the speaker; `nil` falls back.
+    var name: String?
     var volatile: Bool = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
-            Text(label.displayName)
+            Text(name ?? label.displayName)
                 .font(.caption.bold())
                 .foregroundStyle(label.tint)
             Text(text)
@@ -141,7 +144,11 @@ struct FinalTranscriptView: View {
                         .foregroundStyle(.tertiary)
                 } else {
                     ForEach(transcript.utterances) { utterance in
-                        SpeakerBlock(label: utterance.speaker, text: utterance.text)
+                        SpeakerBlock(
+                            label: utterance.speaker,
+                            text: utterance.text,
+                            name: utterance.speakerName
+                        )
                     }
                 }
             }
