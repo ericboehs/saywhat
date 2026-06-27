@@ -29,6 +29,10 @@ final class CaptureModel {
     /// The authoritative transcript from the final pass, shown once a recording
     /// has been re-transcribed and diarized at meeting end (nil until then).
     private(set) var finalTranscript: Transcript?
+    /// Remote slot → the persistent voiceprint the final pass resolved it to, so
+    /// a rename can write the chosen name back onto the matched row. Empty until
+    /// the final pass runs (and when identity resolution was skipped).
+    private var speakers: [Int: Voiceprint] = [:]
     /// Non-nil while the final pass runs, narrating its current stage.
     private(set) var finalizeStatus: String?
     /// Plays the finished recording's mixed audio so the final transcript can be
@@ -60,6 +64,10 @@ final class CaptureModel {
         makeTranscriber: { ParakeetTranscriber(source: $0) }
     )
 
+    /// A handle to the same voiceprint directory the final pass writes, used to
+    /// persist a rename so future meetings recognize the speaker by the new name.
+    private let voiceprintStore = CaptureModel.voiceprintStore()
+
     /// The diarizer's running split of the system track into remote speaker slots;
     /// names each live system segment's remote slot.
     private var remoteSpeakers = SpeakerTimeline()
@@ -81,6 +89,7 @@ final class CaptureModel {
         systemLevel = 0
         transcript = LiveTranscript()
         finalTranscript = nil
+        speakers = [:]
         finalizeStatus = nil
         playback?.pause()
         playback = nil
@@ -161,10 +170,11 @@ final class CaptureModel {
     private func runFinalPass(_ session: RecordingSession) async {
         finalizeStatus = Self.describe(.transcribing(.microphone))
         do {
-            let transcript = try await finalPass.run(session) { phase in
+            let outcome = try await finalPass.run(session) { phase in
                 Task { @MainActor in self.finalizeStatus = Self.describe(phase) }
             }
-            finalTranscript = transcript
+            finalTranscript = outcome.transcript
+            speakers = outcome.speakers
             // Make the saved audio playable so the transcript can be followed
             // along; a failure here just leaves playback unavailable.
             let controller = PlaybackController()
@@ -176,6 +186,25 @@ final class CaptureModel {
             errorMessage = "finalize: \(error)"
         }
         finalizeStatus = nil
+    }
+
+    /// Rename the remote speaker in `slot` to `name`, persisting it onto the
+    /// voiceprint the final pass matched so every future meeting recognizes that
+    /// voice by the chosen name — and relabel the speaker's turns in the
+    /// transcript on screen now. A blank name, an unknown slot (no resolved
+    /// voiceprint), or a storage failure is a no-op (the latter surfaced).
+    func renameSpeaker(slot: Int, to name: String) {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, var voiceprint = speakers[slot] else { return }
+        voiceprint.name = trimmed
+        do {
+            try voiceprintStore?.save(voiceprint)
+        } catch {
+            errorMessage = "rename speaker: \(error)"
+            return
+        }
+        speakers[slot] = voiceprint
+        finalTranscript = finalTranscript?.renamingSpeaker(slot, to: trimmed)
     }
 
     /// A reader-facing description of a final-pass stage.
@@ -403,7 +432,8 @@ struct ContentView: View {
                             cursor: model.playback.flatMap {
                                 finalTranscript.wordCursor(at: $0.currentTime)
                             },
-                            onSeek: { model.playback?.seek(to: $0) }
+                            onSeek: { model.playback?.seek(to: $0) },
+                            onRename: { slot, name in model.renameSpeaker(slot: slot, to: name) }
                         )
                         if let playback = model.playback {
                             PlaybackBar(playback: playback)

@@ -31,6 +31,23 @@ public struct FinalPass: Sendable {
         case merging
     }
 
+    /// Everything the pass produced: the authoritative transcript plus the
+    /// persistent ``Voiceprint`` each remote slot resolved to. The mapping lets
+    /// the UI offer to rename a speaker — writing the chosen name back onto its
+    /// voiceprint teaches every future meeting to recognize them by it. Empty
+    /// when identity resolution was skipped (no store wired, or no embeddings).
+    public struct Outcome: Sendable, Equatable {
+        /// The merged, timeline-ordered authoritative record.
+        public let transcript: Transcript
+        /// Remote diarizer slot → the voiceprint it matched or minted.
+        public let speakers: [Int: Voiceprint]
+
+        public init(transcript: Transcript, speakers: [Int: Voiceprint] = [:]) {
+            self.transcript = transcript
+            self.speakers = speakers
+        }
+    }
+
     private let reader: RecordingReader
     private let diarizer: any Diarizer
     private let merger: TranscriptMerger
@@ -76,7 +93,7 @@ public struct FinalPass: Sendable {
     public func run(
         _ session: RecordingSession,
         onProgress: (@Sendable (Phase) -> Void)? = nil
-    ) async throws -> Transcript {
+    ) async throws -> Outcome {
         let micFrames = try await collect(.microphone, in: session)
         let systemFrames = try await collect(.system, in: session)
 
@@ -90,29 +107,31 @@ public struct FinalPass: Sendable {
         let remoteSpeakers = try await diarize(systemFrames)
 
         onProgress?(.merging)
-        let names = resolveIdentities(remoteSpeakers)
-        return merger.merge(
+        let speakers = resolveIdentities(remoteSpeakers)
+        let transcript = merger.merge(
             mic: mic,
             system: system,
             remoteSpeakers: remoteSpeakers,
-            names: names
+            names: speakers.mapValues(\.name)
         )
+        return Outcome(transcript: transcript, speakers: speakers)
     }
 
     /// Resolve each diarized remote slot to a persistent identity, minting and
     /// persisting a new ``Voiceprint`` for anyone unrecognized, and return the
-    /// slot → display-name map for the merge.
+    /// slot → voiceprint map. The merge takes display names from it; the UI keeps
+    /// the voiceprints so a rename can write back to the matched row.
     ///
     /// A storage error degrades to generic labels rather than failing the pass:
     /// the authoritative transcript is the durable output and must survive a
     /// voiceprint-DB hiccup (the audio-is-durable tenet, applied to its derived
     /// record). Skipped entirely when no store is wired or the diarizer surfaced
     /// no embeddings (the live path).
-    private func resolveIdentities(_ timeline: SpeakerTimeline) -> [Int: String] {
+    private func resolveIdentities(_ timeline: SpeakerTimeline) -> [Int: Voiceprint] {
         guard let store, !timeline.embeddings.isEmpty,
-              let names = try? Self.resolve(timeline.embeddings, in: store, with: resolver)
+              let speakers = try? Self.resolve(timeline.embeddings, in: store, with: resolver)
         else { return [:] }
-        return names
+        return speakers
     }
 
     /// The throwing core of identity resolution, split out so the call site can
@@ -121,12 +140,12 @@ public struct FinalPass: Sendable {
         _ embeddings: [Int: [Float]],
         in store: VoiceprintStore,
         with resolver: SpeakerResolver
-    ) throws -> [Int: String] {
+    ) throws -> [Int: Voiceprint] {
         let resolution = try resolver.resolve(embeddings, against: store.all())
         for voiceprint in resolution.minted {
             try store.save(voiceprint)
         }
-        return resolution.bySlot.mapValues(\.name)
+        return resolution.bySlot
     }
 
     /// Decode one track's saved segments into an in-memory frame buffer.
