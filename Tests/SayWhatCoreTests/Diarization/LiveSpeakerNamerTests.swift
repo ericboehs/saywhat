@@ -12,6 +12,17 @@ private struct MappedEmbedder: SpeakerEmbedder {
     }
 }
 
+/// A ``SpeakerEmbedder`` that maps a clip's fill value to an exact vector, so a
+/// test can dial in intermediate similarities (e.g. a voice that edges another
+/// only slightly) the binary ``MappedEmbedder`` can't express.
+private struct DictionaryEmbedder: SpeakerEmbedder {
+    let vectors: [Float: [Float]]
+    func embedding(for samples: [Float]) async throws -> [Float]? {
+        guard let value = samples.first else { return nil }
+        return vectors[value]
+    }
+}
+
 @Suite("LiveSpeakerNamer")
 struct LiveSpeakerNamerTests {
     /// One second of constant-valued system audio starting at `second`.
@@ -91,11 +102,34 @@ struct LiveSpeakerNamerTests {
         #expect(await namer.resolve().isEmpty)
     }
 
-    @Test("a name sticks even if later audio would match someone else")
-    func nameIsSticky() async throws {
-        let store = try makeStore([("Eric", [1, 0])])
+    @Test("a wrong early match self-corrects once the slot's real voice is clear")
+    func correctsWrongEarlyMatch() async throws {
+        let store = try makeStore([("Theo", [1, 0]), ("MKBHD", [0, 1])])
         let namer = LiveSpeakerNamer(
             embedder: MappedEmbedder(),
+            store: store,
+            minSpeech: .seconds(1)
+        )
+
+        // The slot's first audio matches Theo and is shown as such.
+        await namer.ingest(frame(at: 0, value: 1))
+        await namer.update(SpeakerTimeline(turns: [turn(0, 0, 1)]))
+        #expect(await namer.resolve() == [0: "Theo"])
+
+        // As the slot keeps talking its voice clearly resolves to MKBHD — the name
+        // is corrected rather than sticking to the early mistake.
+        await namer.ingest(frame(at: 1, value: 2))
+        await namer.update(SpeakerTimeline(turns: [turn(0, 1, 2)]))
+        #expect(await namer.resolve() == [0: "MKBHD"])
+    }
+
+    @Test("a confident name is kept when another voice is only marginally closer")
+    func keepsNameWithinMargin() async throws {
+        let store = try makeStore([("Eric", [1, 0]), ("Bob", [0, 1])])
+        // Value 2 embeds nearly between the two, edging Bob (~0.72) over Eric
+        // (~0.69) — under the 0.1 correction margin.
+        let namer = LiveSpeakerNamer(
+            embedder: DictionaryEmbedder(vectors: [1: [1, 0], 2: [0.69, 0.72]]),
             store: store,
             minSpeech: .seconds(1)
         )
@@ -104,12 +138,8 @@ struct LiveSpeakerNamerTests {
         await namer.update(SpeakerTimeline(turns: [turn(0, 0, 1)]))
         #expect(await namer.resolve() == [0: "Eric"])
 
-        // Enroll Bob and feed slot 0 audio that now embeds as Bob's vector; the
-        // already-resolved slot must not flip.
-        try enroll(store, "Bob", [0, 1])
         await namer.ingest(frame(at: 1, value: 2))
-        await namer.update(SpeakerTimeline(turns: [turn(0, 0, 2)]))
-
+        await namer.update(SpeakerTimeline(turns: [turn(0, 1, 2)]))
         #expect(await namer.resolve() == [0: "Eric"])
     }
 

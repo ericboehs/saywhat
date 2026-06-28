@@ -26,16 +26,25 @@ public struct VoiceprintMatcher: Sendable, Equatable {
     /// any clears the threshold; otherwise `nil` (a new speaker). Ties keep the
     /// earlier directory entry.
     public func match(_ embedding: [Float], in directory: [EnrolledPerson]) -> Person? {
-        var best: Person?
-        var bestScore = -Float.greatestFiniteMagnitude
+        bestMatch(embedding, in: directory)?.person
+    }
+
+    /// Like ``match(_:in:)`` but also returns the winning cosine similarity, for
+    /// callers that need the confidence — e.g. deciding whether fresh evidence is
+    /// strong enough to overturn a name already shown to the user. `nil` when no
+    /// enrolled person clears the threshold. Ties keep the earlier directory entry.
+    public func bestMatch(
+        _ embedding: [Float],
+        in directory: [EnrolledPerson]
+    ) -> (person: Person, score: Float)? {
+        var best: (person: Person, score: Float)?
         for enrolled in directory {
             let score = Self.bestSimilarity(embedding, enrolled.exemplars)
-            if score > bestScore {
-                bestScore = score
-                best = enrolled.person
+            if score > (best?.score ?? -Float.greatestFiniteMagnitude) {
+                best = (enrolled.person, score)
             }
         }
-        guard let best, bestScore >= threshold else { return nil }
+        guard let best, best.score >= threshold else { return nil }
         return best
     }
 
