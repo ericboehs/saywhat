@@ -117,6 +117,36 @@ public struct Transcript: Sendable, Equatable, Codable {
         })
     }
 
+    /// A copy with consecutive utterances from the same speaker fused into one
+    /// block — the coalescing invariant the final pass establishes, re-applied after
+    /// an edit (a rename or reassign) leaves two adjacent blocks the same speaker.
+    /// Text is joined with a space (empty pieces skipped), word timings are
+    /// concatenated in order, and the range spans both. The first utterance's id is
+    /// kept, so playback cursors and `ForEach` identity stay stable; the absorbed
+    /// utterance's id simply disappears. Speakers separated by another speaker's
+    /// turn are left alone — only genuinely adjacent runs merge.
+    public func coalesced() -> Transcript {
+        var merged: [Utterance] = []
+        for utterance in utterances {
+            guard let last = merged.last,
+                  last.speaker == utterance.speaker,
+                  last.speakerName == utterance.speakerName
+            else {
+                merged.append(utterance)
+                continue
+            }
+            merged[merged.count - 1] = Utterance(
+                id: last.id,
+                speaker: last.speaker,
+                speakerName: last.speakerName,
+                text: [last.text, utterance.text].filter { !$0.isEmpty }.joined(separator: " "),
+                range: last.start ..< utterance.end,
+                words: last.words + utterance.words
+            )
+        }
+        return Transcript(utterances: merged)
+    }
+
     /// The end of the last utterance — the transcript's overall length.
     public var duration: Duration {
         utterances.last?.end ?? .zero
