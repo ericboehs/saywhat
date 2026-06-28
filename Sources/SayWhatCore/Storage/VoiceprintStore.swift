@@ -139,6 +139,25 @@ public struct VoiceprintStore: Sendable {
         }
     }
 
+    /// Fold `source` into `destination`: reassign every one of `source`'s exemplars
+    /// to `destination`, then delete the now-empty `source` row. This is how two
+    /// people the user has confirmed are one voice (duplicate "Zwag" entries) become
+    /// one. A no-op when the ids are equal. Exemplars keep their ids — only their
+    /// owner changes — so the merge is a pure re-parenting, done in one transaction.
+    public func merge(_ source: UUID, into destination: UUID) throws {
+        guard source != destination else { return }
+        try database.write { db in
+            try db.execute(
+                sql: "UPDATE voiceprint SET person_id = ? WHERE person_id = ?",
+                arguments: [destination.uuidString, source.uuidString]
+            )
+            try db.execute(
+                sql: "DELETE FROM person WHERE id = ?",
+                arguments: [source.uuidString]
+            )
+        }
+    }
+
     // MARK: exemplars
 
     /// Insert `voiceprint`, replacing any existing row with the same id. A null

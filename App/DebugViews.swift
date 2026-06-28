@@ -71,7 +71,28 @@ struct VoiceprintInspector: View {
             Spacer()
             Text("\(entry.exemplars.count) print\(entry.exemplars.count == 1 ? "" : "s")")
                 .foregroundStyle(.secondary)
+            mergeMenu(entry)
         }
         .textSelection(.enabled)
+    }
+
+    /// A "merge into…" menu folding this person's voiceprints into another (the
+    /// fix for a duplicate). Lists every other enrolled person; disabled when this
+    /// is the only one.
+    private func mergeMenu(_ entry: EnrolledPerson) -> some View {
+        let others = model.voiceprintDirectory.filter { $0.person.id != entry.person.id }
+        return Menu {
+            ForEach(others, id: \.person.id) { other in
+                Button("\(other.person.name) [\(CaptureModel.shortID(other.person.id))]") {
+                    model.mergeVoiceprints(entry.person.id, into: other.person.id)
+                }
+            }
+        } label: {
+            Image(systemName: "arrow.triangle.merge")
+        }
+        .menuStyle(.borderlessButton)
+        .fixedSize()
+        .disabled(others.isEmpty)
+        .help("Merge this person's voiceprints into another")
     }
 }

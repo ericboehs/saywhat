@@ -180,6 +180,33 @@ struct VoiceprintStoreTests {
         #expect(enrolled.first(where: { $0.person.name == "Theo" })?.exemplars.count == 1)
     }
 
+    // MARK: merge
+
+    @Test("merging folds one person's exemplars into another and drops the source")
+    func mergeFoldsExemplars() throws {
+        let store = try VoiceprintStore()
+        let keep = try enroll(store, "Zwag", [1, 0])
+        let dupe = try enroll(store, "Zwag", [0, 1], [1, 1])
+
+        try store.merge(dupe.id, into: keep.id)
+
+        let enrolled = try store.enrolledPersons()
+        #expect(enrolled.map(\.person) == [keep])
+        #expect(enrolled.first?.exemplars.count == 3)
+    }
+
+    @Test("merging a person into itself is a no-op")
+    func mergeSelfNoOp() throws {
+        let store = try VoiceprintStore()
+        let eric = try enroll(store, "Eric", [1, 0])
+
+        try store.merge(eric.id, into: eric.id)
+
+        let enrolled = try store.enrolledPersons()
+        #expect(enrolled.map(\.person) == [eric])
+        #expect(enrolled.first?.exemplars.count == 1)
+    }
+
     // MARK: embedding codec
 
     @Test("encode/decode is a round trip")

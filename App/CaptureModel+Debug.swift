@@ -61,6 +61,18 @@ extension CaptureModel {
         }
     }
 
+    /// Fold one enrolled person's voiceprints into another (collapsing a duplicate),
+    /// then reload the directory so the inspector reflects the merge. A store failure
+    /// is surfaced and leaves both people intact.
+    func mergeVoiceprints(_ source: UUID, into destination: UUID) {
+        do {
+            try voiceprintStore?.merge(source, into: destination)
+            loadVoiceprintDirectory()
+        } catch {
+            errorMessage = "merge voiceprints: \(error)"
+        }
+    }
+
     /// First 8 characters of a UUID — enough to tell two same-named people apart in
     /// the overlay without the full id's noise.
     static func shortID(_ id: UUID) -> String {
