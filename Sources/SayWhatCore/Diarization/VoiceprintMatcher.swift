@@ -37,6 +37,21 @@ public struct VoiceprintMatcher: Sendable, Equatable {
         _ embedding: [Float],
         in directory: [EnrolledPerson]
     ) -> (person: Person, score: Float)? {
+        guard let nearest = nearest(embedding, in: directory), nearest.score >= threshold else {
+            return nil
+        }
+        return nearest
+    }
+
+    /// The most similar enrolled person and their score, **ignoring the
+    /// threshold** — the closest match even when it isn't close enough to accept.
+    /// For diagnostics that want to show "nearest is Zwag at 0.42" while the
+    /// matcher itself still treats the voice as unknown. `nil` for an empty
+    /// directory. Ties keep the earlier directory entry.
+    public func nearest(
+        _ embedding: [Float],
+        in directory: [EnrolledPerson]
+    ) -> (person: Person, score: Float)? {
         var best: (person: Person, score: Float)?
         for enrolled in directory {
             let score = Self.bestSimilarity(embedding, enrolled.exemplars)
@@ -44,7 +59,6 @@ public struct VoiceprintMatcher: Sendable, Equatable {
                 best = (enrolled.person, score)
             }
         }
-        guard let best, best.score >= threshold else { return nil }
         return best
     }
 

@@ -173,4 +173,44 @@ struct LiveSpeakerNamerTests {
 
         #expect(await namer.resolve().isEmpty)
     }
+
+    // MARK: debug diagnostics
+
+    @Test("debug reports the nearest voice and score for a matched slot")
+    func debugReportsNearest() async throws {
+        let store = try makeStore([("Eric", [1, 0])])
+        let namer = LiveSpeakerNamer(
+            embedder: MappedEmbedder(),
+            store: store,
+            minSpeech: .seconds(1)
+        )
+
+        await namer.ingest(frame(at: 0, value: 1))
+        await namer.update(SpeakerTimeline(turns: [turn(0, 0, 1)]))
+        _ = await namer.resolve()
+
+        let diagnostics = try #require(await namer.debug()[0])
+        #expect(diagnostics.nearestName == "Eric")
+        #expect(diagnostics.score == 1)
+        #expect(diagnostics.samples >= diagnostics.minSamples)
+    }
+
+    @Test("debug marks a slot still gathering audio below the minimum")
+    func debugReportsGathering() async throws {
+        let store = try makeStore([("Eric", [1, 0])])
+        // Needs 3s; only 1s is fed, so the slot can't be matched yet.
+        let namer = LiveSpeakerNamer(
+            embedder: MappedEmbedder(),
+            store: store,
+            minSpeech: .seconds(3)
+        )
+
+        await namer.ingest(frame(at: 0, value: 1))
+        await namer.update(SpeakerTimeline(turns: [turn(0, 0, 1)]))
+        _ = await namer.resolve()
+
+        let diagnostics = try #require(await namer.debug()[0])
+        #expect(diagnostics.nearestName == nil)
+        #expect(diagnostics.samples < diagnostics.minSamples)
+    }
 }

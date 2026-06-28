@@ -81,4 +81,23 @@ struct VoiceprintMatcherTests {
         ]
         #expect(VoiceprintMatcher().match([1, 0], in: directory)?.name == "First")
     }
+
+    // MARK: nearest (threshold-free, for diagnostics)
+
+    @Test("nearest returns the closest person even below the threshold")
+    func nearestIgnoresThreshold() {
+        let directory = [enrolled("Eric", [1, 0])]
+        let query: [Float] = [0, 1] // cosine 0 — far below any threshold
+        // bestMatch gates on the threshold and finds nothing…
+        #expect(VoiceprintMatcher().bestMatch(query, in: directory) == nil)
+        // …but nearest still reports who was closest, and how close.
+        let nearest = VoiceprintMatcher().nearest(query, in: directory)
+        #expect(nearest?.person.name == "Eric")
+        #expect(nearest?.score == 0)
+    }
+
+    @Test("nearest returns nil only for an empty directory")
+    func nearestEmptyDirectory() {
+        #expect(VoiceprintMatcher().nearest([1, 0], in: []) == nil)
+    }
 }

@@ -38,6 +38,21 @@ public actor LiveSpeakerNamer {
     /// (see ``correctionMargin``) — so a confident name doesn't flicker, yet a wrong
     /// early match self-corrects instead of sticking for the whole meeting.
     private var names: [Int: String] = [:]
+    /// Slot → the last evaluation's diagnostics (nearest enrolled voice, its score,
+    /// how much audio has accumulated), for the debug overlay. Purely observational
+    /// — it never influences naming.
+    private var diagnostics: [Int: SlotDiagnostics] = [:]
+
+    /// What the namer saw for one slot on its most recent evaluation. `nearestName`
+    /// is the closest enrolled voice *regardless of threshold*, so the overlay can
+    /// show a near-miss; `samples` against the floor reveals a slot still gathering
+    /// audio.
+    public struct SlotDiagnostics: Sendable, Equatable {
+        public let nearestName: String?
+        public let score: Float
+        public let samples: Int
+        public let minSamples: Int
+    }
 
     /// - Parameters:
     ///   - matcher: the cosine-similarity policy; share the final pass's so the
@@ -95,12 +110,31 @@ public actor LiveSpeakerNamer {
         }
         for slot in Set(timeline.turns.map(\.speaker)).sorted() {
             let samples = SpeakerAudio.samples(forSlot: slot, in: timeline, from: frames)
-            guard samples.count >= minSamples,
-                  let vector = try? await embedder.embedding(for: samples),
-                  let match = matcher.bestMatch(vector, in: directory) else { continue }
-            names[slot] = name(forSlot: slot, winner: match, vector: vector, in: directory)
+            guard samples.count >= minSamples else {
+                diagnostics[slot] = SlotDiagnostics(
+                    nearestName: nil, score: 0, samples: samples.count, minSamples: minSamples
+                )
+                continue
+            }
+            guard let vector = try? await embedder.embedding(for: samples) else { continue }
+            let nearest = matcher.nearest(vector, in: directory)
+            diagnostics[slot] = SlotDiagnostics(
+                nearestName: nearest?.person.name,
+                score: nearest?.score ?? 0,
+                samples: samples.count,
+                minSamples: minSamples
+            )
+            if let match = matcher.bestMatch(vector, in: directory) {
+                names[slot] = name(forSlot: slot, winner: match, vector: vector, in: directory)
+            }
         }
         return names
+    }
+
+    /// The latest per-slot diagnostics for the debug overlay — what the namer saw
+    /// last time it evaluated each slot. Observational only.
+    public func debug() -> [Int: SlotDiagnostics] {
+        diagnostics
     }
 
     /// The name to record for `slot`: the winning match normally, but an existing
