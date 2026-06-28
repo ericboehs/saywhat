@@ -55,6 +55,12 @@ public struct FinalPass: Sendable {
     private let budget: Budget
     private let store: VoiceprintStore?
     private let resolver: SpeakerResolver
+    private let embedder: (any SpeakerEmbedder)?
+
+    /// Minimum system audio a slot needs before we trust an identity embedding
+    /// from it — short interjections don't carry a stable voiceprint. One second
+    /// at the model's 16 kHz rate.
+    private static let minIdentitySamples = 16000
 
     /// Generous default watchdog: `4×` realtime, floored at a minute. The whole
     /// final pass runs well under realtime in practice, so this only ever fires
@@ -68,6 +74,9 @@ public struct FinalPass: Sendable {
     ///     speakers are resolved to (and minted into) it; `nil` skips identity
     ///     resolution entirely (generic `Speaker N` labels).
     ///   - resolver: the slot → identity policy. Defaults to a conservative match.
+    ///   - embedder: extracts the `wespeaker_v2` identity vector for a slot's
+    ///     audio — the one space live and final recognition share. `nil` (or no
+    ///     store) skips identity resolution entirely (generic `Speaker N` labels).
     public init(
         reader: RecordingReader = RecordingReader(),
         diarizer: any Diarizer,
@@ -75,6 +84,7 @@ public struct FinalPass: Sendable {
         budget: @escaping Budget = FinalPass.defaultBudget,
         store: VoiceprintStore? = nil,
         resolver: SpeakerResolver = SpeakerResolver(),
+        embedder: (any SpeakerEmbedder)? = nil,
         makeTranscriber: @escaping MakeTranscriber
     ) {
         self.reader = reader
@@ -83,6 +93,7 @@ public struct FinalPass: Sendable {
         self.budget = budget
         self.store = store
         self.resolver = resolver
+        self.embedder = embedder
         self.makeTranscriber = makeTranscriber
     }
 
@@ -107,7 +118,7 @@ public struct FinalPass: Sendable {
         let remoteSpeakers = try await diarize(systemFrames)
 
         onProgress?(.merging)
-        let speakers = resolveIdentities(remoteSpeakers)
+        let speakers = await resolveIdentities(remoteSpeakers, system: systemFrames)
         let transcript = merger.merge(
             mic: mic,
             system: system,
@@ -122,16 +133,45 @@ public struct FinalPass: Sendable {
     /// slot → voiceprint map. The merge takes display names from it; the UI keeps
     /// the voiceprints so a rename can write back to the matched row.
     ///
+    /// Identity comes from a `wespeaker_v2` vector re-extracted from each slot's
+    /// system audio — not the diarizer's internal cluster embeddings, which live
+    /// in an incomparable space — so a voiceprint stays portable to the live namer
+    /// (DESIGN.md §6). A slot with too little audio to embed is left unresolved.
+    ///
     /// A storage error degrades to generic labels rather than failing the pass:
     /// the authoritative transcript is the durable output and must survive a
     /// voiceprint-DB hiccup (the audio-is-durable tenet, applied to its derived
-    /// record). Skipped entirely when no store is wired or the diarizer surfaced
-    /// no embeddings (the live path).
-    private func resolveIdentities(_ timeline: SpeakerTimeline) -> [Int: Voiceprint] {
-        guard let store, !timeline.embeddings.isEmpty,
-              let speakers = try? Self.resolve(timeline.embeddings, in: store, with: resolver)
+    /// record). Skipped entirely when no store or embedder is wired.
+    private func resolveIdentities(
+        _ timeline: SpeakerTimeline,
+        system frames: [AudioFrame]
+    ) async -> [Int: Voiceprint] {
+        guard let store, let embedder else { return [:] }
+        let embeddings = await identityEmbeddings(timeline, system: frames, using: embedder)
+        guard !embeddings.isEmpty,
+              let speakers = try? Self.resolve(embeddings, in: store, with: resolver)
         else { return [:] }
         return speakers
+    }
+
+    /// Re-embed each remote slot's system audio into the shared identity space,
+    /// dropping slots too short to carry a stable voiceprint. Slots are walked in
+    /// order so the result is deterministic.
+    private func identityEmbeddings(
+        _ timeline: SpeakerTimeline,
+        system frames: [AudioFrame],
+        using embedder: any SpeakerEmbedder
+    ) async -> [Int: [Float]] {
+        let slots = Set(timeline.turns.map(\.speaker)).sorted()
+        var embeddings: [Int: [Float]] = [:]
+        for slot in slots {
+            let samples = SpeakerAudio.samples(forSlot: slot, in: timeline, from: frames)
+            guard samples.count >= Self.minIdentitySamples else { continue }
+            if let vector = try? await embedder.embedding(for: samples) {
+                embeddings[slot] = vector
+            }
+        }
+        return embeddings
     }
 
     /// The throwing core of identity resolution, split out so the call site can
