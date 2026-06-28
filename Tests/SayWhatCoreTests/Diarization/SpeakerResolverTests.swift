@@ -4,90 +4,100 @@ import Testing
 
 @Suite("SpeakerResolver")
 struct SpeakerResolverTests {
-    private func voiceprint(_ name: String, _ embedding: [Float]) -> Voiceprint {
-        Voiceprint(name: name, embedding: embedding)
+    /// An enrolled person with a single exemplar embedding.
+    private func enrolled(_ name: String, _ embedding: [Float]) -> EnrolledPerson {
+        let person = Person(name: name)
+        return EnrolledPerson(
+            person: person,
+            exemplars: [Voiceprint(personID: person.id, embedding: embedding)]
+        )
     }
 
-    @Test("a slot matching an enrolled speaker resolves to them, minting nothing")
+    @Test("a slot matching an enrolled person resolves to them, minting nothing")
     func matchesEnrolled() {
-        let eric = voiceprint("Eric", [1, 0])
+        let eric = enrolled("Eric", [1, 0])
         let resolution = SpeakerResolver().resolve([0: [0.9, 0.1]], against: [eric])
 
-        #expect(resolution.bySlot[0] == eric)
-        #expect(resolution.minted.isEmpty)
+        let resolved = resolution.bySlot[0]
+        #expect(resolved?.person == eric.person)
+        #expect(resolved?.name == "Eric")
+        // The slot's own embedding is carried as an exemplar bound to the person.
+        #expect(resolved?.exemplar.embedding == [0.9, 0.1])
+        #expect(resolved?.exemplar.personID == eric.person.id)
     }
 
-    @Test("a slot matching nobody mints a new voiceprint carrying its embedding")
+    @Test("a slot matching nobody mints an un-named speaker carrying its embedding")
     func mintsNewSpeaker() {
-        let eric = voiceprint("Eric", [1, 0])
+        let eric = enrolled("Eric", [1, 0])
         let resolution = SpeakerResolver().resolve([0: [0, 1]], against: [eric])
 
-        let minted = try? #require(resolution.minted.first)
-        #expect(resolution.minted.count == 1)
-        #expect(minted?.name == "Speaker 1")
-        #expect(minted?.embedding == [0, 1])
-        #expect(resolution.bySlot[0] == minted)
+        let resolved = resolution.bySlot[0]
+        #expect(resolved?.person == nil)
+        #expect(resolved?.name == "Speaker 1")
+        #expect(resolved?.exemplar.embedding == [0, 1])
+        // An un-named mint is un-owned — never persisted until the user names it.
+        #expect(resolved?.exemplar.personID == nil)
     }
 
-    @Test("an empty directory mints one voiceprint per slot, in slot order")
+    @Test("an empty directory mints one speaker per slot, in slot order")
     func emptyDirectoryMintsAll() {
         let resolution = SpeakerResolver().resolve(
             [1: [0, 1], 0: [1, 0]],
             against: []
         )
 
-        #expect(resolution.minted.map(\.name) == ["Speaker 1", "Speaker 2"])
-        #expect(resolution.bySlot[0]?.embedding == [1, 0])
-        #expect(resolution.bySlot[1]?.embedding == [0, 1])
+        #expect(resolution.bySlot[0]?.name == "Speaker 1")
+        #expect(resolution.bySlot[1]?.name == "Speaker 2")
+        #expect(resolution.bySlot[0]?.exemplar.embedding == [1, 0])
+        #expect(resolution.bySlot[1]?.exemplar.embedding == [0, 1])
     }
 
-    @Test("two slots resolve to their respective enrolled speakers, not crossed")
+    @Test("two slots resolve to their respective enrolled persons, not crossed")
     func distinctSlotsDistinctSpeakers() {
-        let eric = voiceprint("Eric", [1, 0])
-        let ashley = voiceprint("Ashley", [0, 1])
+        let eric = enrolled("Eric", [1, 0])
+        let ashley = enrolled("Ashley", [0, 1])
         let resolution = SpeakerResolver().resolve(
             [0: [0.1, 0.9], 1: [0.9, 0.1]],
             against: [eric, ashley]
         )
 
-        #expect(resolution.bySlot[0] == ashley)
-        #expect(resolution.bySlot[1] == eric)
-        #expect(resolution.minted.isEmpty)
+        #expect(resolution.bySlot[0]?.person == ashley.person)
+        #expect(resolution.bySlot[1]?.person == eric.person)
     }
 
-    @Test("when two slots both match one speaker, the stronger keeps them; the other mints")
+    @Test("when two slots both match one person, the stronger keeps them; the other mints")
     func mutualExclusion() {
-        let eric = voiceprint("Eric", [1, 0])
+        let eric = enrolled("Eric", [1, 0])
         // Slot 0 is a perfect match; slot 1 also clears threshold but is weaker.
         let resolution = SpeakerResolver().resolve(
             [0: [1, 0], 1: [0.9, 0.1]],
             against: [eric]
         )
 
-        #expect(resolution.bySlot[0] == eric)
+        #expect(resolution.bySlot[0]?.person == eric.person)
         // The newcomer takes the first free number; "Eric" isn't a "Speaker N".
+        #expect(resolution.bySlot[1]?.person == nil)
         #expect(resolution.bySlot[1]?.name == "Speaker 1")
-        #expect(resolution.minted.map(\.name) == ["Speaker 1"])
     }
 
     @Test("a newcomer skips numbers already taken by enrolled Speaker N names")
     func mintsUniqueAgainstExistingSpeakers() {
-        // The directory already has auto-named speakers from prior meetings.
-        let existing = [voiceprint("Speaker 1", [1, 0]), voiceprint("Speaker 3", [0, 1])]
+        // The directory already has persons literally named "Speaker N".
+        let existing = [enrolled("Speaker 1", [1, 0]), enrolled("Speaker 3", [0, 1])]
         // [-1, -1] is dissimilar to both axes, so it matches nobody and mints.
         let resolution = SpeakerResolver().resolve([0: [-1, -1]], against: existing)
 
         // Smallest free number, not a duplicate "Speaker 1".
-        #expect(resolution.minted.map(\.name) == ["Speaker 2"])
+        #expect(resolution.bySlot[0]?.name == "Speaker 2")
     }
 
     @Test("ties pick the earlier directory entry, deterministically")
     func tieBreakByDirectoryOrder() {
-        let first = voiceprint("First", [1, 0])
-        let second = voiceprint("Second", [1, 0])
+        let first = enrolled("First", [1, 0])
+        let second = enrolled("Second", [1, 0])
         let resolution = SpeakerResolver().resolve([0: [1, 0]], against: [first, second])
 
-        #expect(resolution.bySlot[0] == first)
+        #expect(resolution.bySlot[0]?.person == first.person)
     }
 
     @Test("the mint name is customizable")
@@ -104,8 +114,7 @@ struct SpeakerResolverTests {
 
     @Test("no observations resolve to nothing")
     func empty() {
-        let resolution = SpeakerResolver().resolve([:], against: [voiceprint("Eric", [1, 0])])
+        let resolution = SpeakerResolver().resolve([:], against: [enrolled("Eric", [1, 0])])
         #expect(resolution.bySlot.isEmpty)
-        #expect(resolution.minted.isEmpty)
     }
 }

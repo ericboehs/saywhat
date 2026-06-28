@@ -27,17 +27,24 @@ struct LiveSpeakerNamerTests {
         SpeakerTurn(speaker: slot, range: .seconds(from) ..< .seconds(to))
     }
 
-    private func makeStore(_ voiceprints: [Voiceprint]) throws -> VoiceprintStore {
+    /// Enroll a person with a single exemplar embedding into `store`.
+    private func enroll(_ store: VoiceprintStore, _ name: String, _ embedding: [Float]) throws {
+        let person = Person(name: name)
+        try store.savePerson(person)
+        try store.save(Voiceprint(personID: person.id, embedding: embedding))
+    }
+
+    private func makeStore(_ people: [(String, [Float])]) throws -> VoiceprintStore {
         let store = try VoiceprintStore()
-        for voiceprint in voiceprints {
-            try store.save(voiceprint)
+        for (name, embedding) in people {
+            try enroll(store, name, embedding)
         }
         return store
     }
 
-    @Test("names a slot once it matches an enrolled voiceprint")
+    @Test("names a slot once it matches an enrolled person")
     func namesMatchedSlot() async throws {
-        let store = try makeStore([Voiceprint(name: "Eric", embedding: [1, 0])])
+        let store = try makeStore([("Eric", [1, 0])])
         let namer = LiveSpeakerNamer(
             embedder: MappedEmbedder(),
             store: store,
@@ -52,7 +59,7 @@ struct LiveSpeakerNamerTests {
 
     @Test("an unknown voice stays unnamed and nothing is persisted")
     func unknownVoiceStaysGeneric() async throws {
-        let store = try makeStore([Voiceprint(name: "Eric", embedding: [1, 0])])
+        let store = try makeStore([("Eric", [1, 0])])
         let namer = LiveSpeakerNamer(
             embedder: MappedEmbedder(),
             store: store,
@@ -65,12 +72,12 @@ struct LiveSpeakerNamerTests {
 
         #expect(await namer.resolve().isEmpty)
         // Read-only: the directory is untouched (minting is the final pass's job).
-        #expect(try store.all().map(\.name) == ["Eric"])
+        #expect(try store.enrolledPersons().map(\.person.name) == ["Eric"])
     }
 
     @Test("a slot with too little audio is not named")
     func shortSlotNotNamed() async throws {
-        let store = try makeStore([Voiceprint(name: "Eric", embedding: [1, 0])])
+        let store = try makeStore([("Eric", [1, 0])])
         // Needs 3s; only 1s is fed.
         let namer = LiveSpeakerNamer(
             embedder: MappedEmbedder(),
@@ -86,7 +93,7 @@ struct LiveSpeakerNamerTests {
 
     @Test("a name sticks even if later audio would match someone else")
     func nameIsSticky() async throws {
-        let store = try makeStore([Voiceprint(name: "Eric", embedding: [1, 0])])
+        let store = try makeStore([("Eric", [1, 0])])
         let namer = LiveSpeakerNamer(
             embedder: MappedEmbedder(),
             store: store,
@@ -99,7 +106,7 @@ struct LiveSpeakerNamerTests {
 
         // Enroll Bob and feed slot 0 audio that now embeds as Bob's vector; the
         // already-resolved slot must not flip.
-        try store.save(Voiceprint(name: "Bob", embedding: [0, 1]))
+        try enroll(store, "Bob", [0, 1])
         await namer.ingest(frame(at: 1, value: 2))
         await namer.update(SpeakerTimeline(turns: [turn(0, 0, 2)]))
 
@@ -118,7 +125,7 @@ struct LiveSpeakerNamerTests {
 
     @Test("audio older than the window is dropped")
     func windowTrims() async throws {
-        let store = try makeStore([Voiceprint(name: "Eric", embedding: [1, 0])])
+        let store = try makeStore([("Eric", [1, 0])])
         let namer = LiveSpeakerNamer(
             embedder: MappedEmbedder(),
             store: store,

@@ -74,11 +74,11 @@ public actor LiveSpeakerNamer {
 
     /// Try to name any still-unnamed slot that has accumulated enough audio, and
     /// return the full sticky slot → name map. Only slots whose voice clears the
-    /// matcher against an enrolled voiceprint get a name; unknown voices stay
-    /// generic (the final pass will mint them later). Throttle the caller — each
-    /// unresolved slot costs one embedding inference.
+    /// matcher against an enrolled person get a name; unknown voices stay generic
+    /// (the final pass labels them later). Throttle the caller — each unresolved
+    /// slot costs one embedding inference.
     public func resolve() async -> [Int: String] {
-        guard let store, let directory = try? store.all(), !directory.isEmpty else {
+        guard let store, let directory = try? store.enrolledPersons(), !directory.isEmpty else {
             return names
         }
         let unnamed = Set(timeline.turns.map(\.speaker)).subtracting(names.keys).sorted()

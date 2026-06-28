@@ -5,56 +5,98 @@ import Testing
 
 @Suite("VoiceprintStore")
 struct VoiceprintStoreTests {
-    private func voiceprint(_ name: String, _ embedding: [Float]) -> Voiceprint {
-        Voiceprint(name: name, embedding: embedding)
+    /// Enroll a person with one or more exemplar embeddings, returning the person.
+    @discardableResult
+    private func enroll(
+        _ store: VoiceprintStore,
+        _ name: String,
+        _ embeddings: [Float]...
+    ) throws -> Person {
+        let person = Person(name: name)
+        try store.savePerson(person)
+        for embedding in embeddings {
+            try store.save(Voiceprint(personID: person.id, embedding: embedding))
+        }
+        return person
     }
 
     // MARK: persistence
 
-    @Test("saved voiceprints come back intact")
+    @Test("an enrolled person comes back with their exemplar intact")
     func roundTrip() throws {
         let store = try VoiceprintStore()
-        let eric = voiceprint("Eric", [0.1, 0.2, 0.3])
-        try store.save(eric)
+        let eric = try enroll(store, "Eric", [0.1, 0.2, 0.3])
 
-        let all = try store.all()
-        #expect(all == [eric])
+        let enrolled = try store.enrolledPersons()
+        #expect(enrolled.map(\.person) == [eric])
+        #expect(enrolled.first?.exemplars.map(\.embedding) == [[0.1, 0.2, 0.3]])
+        #expect(enrolled.first?.exemplars.first?.personID == eric.id)
     }
 
-    @Test("save replaces the row with the same id")
-    func upsert() throws {
+    @Test("a person owns a set of exemplars")
+    func multipleExemplars() throws {
         let store = try VoiceprintStore()
-        let original = voiceprint("Eric", [1, 0])
-        try store.save(original)
-        try store.save(Voiceprint(id: original.id, name: "Eric Boehs", embedding: [0, 1]))
+        try enroll(store, "Eric", [1, 0], [0, 1], [1, 1])
 
-        let all = try store.all()
-        #expect(all.count == 1)
-        #expect(all.first?.name == "Eric Boehs")
-        #expect(all.first?.embedding == [0, 1])
+        let enrolled = try store.enrolledPersons()
+        #expect(enrolled.count == 1)
+        #expect(enrolled.first?.exemplars.count == 3)
     }
 
-    @Test("delete removes a voiceprint; deleting an absent id is a no-op")
+    @Test("savePerson replaces the row with the same id, renaming the person")
+    func personUpsert() throws {
+        let store = try VoiceprintStore()
+        let eric = try enroll(store, "Eric", [1, 0])
+        try store.savePerson(Person(id: eric.id, name: "Eric Boehs"))
+
+        let enrolled = try store.enrolledPersons()
+        #expect(enrolled.count == 1)
+        #expect(enrolled.first?.person.name == "Eric Boehs")
+        #expect(enrolled.first?.exemplars.count == 1)
+    }
+
+    @Test("person(named:) finds an enrolled name and nil for an unknown one")
+    func personLookup() throws {
+        let store = try VoiceprintStore()
+        let eric = try enroll(store, "Eric", [1, 0])
+
+        #expect(try store.person(named: "Eric") == eric)
+        #expect(try store.person(named: "Nobody") == nil)
+    }
+
+    @Test("an un-owned exemplar is not an enrolled person")
+    func unownedExemplarsExcluded() throws {
+        let store = try VoiceprintStore()
+        try store.save(Voiceprint(embedding: [1, 0])) // personID nil — a stray mint
+
+        #expect(try store.enrolledPersons().isEmpty)
+    }
+
+    @Test("delete removes one exemplar; deleting an absent id is a no-op")
     func delete() throws {
         let store = try VoiceprintStore()
-        let eric = voiceprint("Eric", [1, 0])
-        try store.save(eric)
+        let person = Person(name: "Eric")
+        try store.savePerson(person)
+        let keep = Voiceprint(personID: person.id, embedding: [1, 0])
+        let drop = Voiceprint(personID: person.id, embedding: [0, 1])
+        try store.save(keep)
+        try store.save(drop)
 
         try store.delete(id: UUID()) // absent — must not throw or remove anything
-        #expect(try store.all() == [eric])
+        #expect(try store.enrolledPersons().first?.exemplars.count == 2)
 
-        try store.delete(id: eric.id)
-        #expect(try store.all().isEmpty)
+        try store.delete(id: drop.id)
+        #expect(try store.enrolledPersons().first?.exemplars.map(\.id) == [keep.id])
     }
 
     @Test("the directory is ordered by name")
     func orderedByName() throws {
         let store = try VoiceprintStore()
-        try store.save(voiceprint("Charlie", [1]))
-        try store.save(voiceprint("Alice", [1]))
-        try store.save(voiceprint("Bob", [1]))
+        try enroll(store, "Charlie", [1])
+        try enroll(store, "Alice", [1])
+        try enroll(store, "Bob", [1])
 
-        #expect(try store.all().map(\.name) == ["Alice", "Bob", "Charlie"])
+        #expect(try store.enrolledPersons().map(\.person.name) == ["Alice", "Bob", "Charlie"])
     }
 
     @Test("a file-backed store persists across reopen")
@@ -63,33 +105,79 @@ struct VoiceprintStoreTests {
             .appendingPathComponent("voiceprints-\(UUID().uuidString).sqlite").path
         defer { try? FileManager.default.removeItem(atPath: path) }
 
-        let eric = voiceprint("Eric", [0.4, 0.5, 0.6])
-        try VoiceprintStore(path: path).save(eric)
+        let eric = try enroll(VoiceprintStore(path: path), "Eric", [0.4, 0.5, 0.6])
 
         let reopened = try VoiceprintStore(path: path)
-        #expect(try reopened.all() == [eric])
+        let enrolled = try reopened.enrolledPersons()
+        #expect(enrolled.map(\.person) == [eric])
+        #expect(enrolled.first?.exemplars.map(\.embedding) == [[0.4, 0.5, 0.6]])
     }
 
-    @Test("a row whose id isn't a valid UUID is skipped, not fatal")
+    @Test("an exemplar whose id isn't a valid UUID is skipped, not fatal")
     func skipsCorruptRow() throws {
         let path = FileManager.default.temporaryDirectory
             .appendingPathComponent("voiceprints-\(UUID().uuidString).sqlite").path
         defer { try? FileManager.default.removeItem(atPath: path) }
 
         let store = try VoiceprintStore(path: path)
-        let eric = voiceprint("Eric", [1, 0])
-        try store.save(eric)
+        let eric = try enroll(store, "Eric", [1, 0])
 
-        // Inject a corrupt id directly through a second connection.
+        // Inject a corrupt exemplar id directly through a second connection.
         let raw = try DatabaseQueue(path: path)
         try raw.write { db in
             try db.execute(
-                sql: "INSERT INTO voiceprint (id, name, embedding) VALUES (?, ?, ?)",
-                arguments: ["not-a-uuid", "Ghost", VoiceprintStore.encode([0, 1])]
+                sql: "INSERT INTO voiceprint (id, person_id, embedding) VALUES (?, ?, ?)",
+                arguments: ["not-a-uuid", eric.id.uuidString, VoiceprintStore.encode([0, 1])]
             )
         }
 
-        #expect(try store.all() == [eric])
+        #expect(try store.enrolledPersons().first?.exemplars.map(\.embedding) == [[1, 0]])
+    }
+
+    // MARK: legacy migration
+
+    @Test(
+        "the legacy name-per-row schema migrates to persons, grouping by name and dropping Speaker N"
+    )
+    func migratesLegacySchema() throws {
+        let path = FileManager.default.temporaryDirectory
+            .appendingPathComponent("voiceprints-\(UUID().uuidString).sqlite").path
+        defer { try? FileManager.default.removeItem(atPath: path) }
+
+        // Build the original schema by hand, recording only the first migration as
+        // applied so the store runs the rest (count + persons) over real legacy data.
+        let raw = try DatabaseQueue(path: path)
+        try raw.write { db in
+            try db.execute(sql: """
+            CREATE TABLE voiceprint (id TEXT PRIMARY KEY, name TEXT NOT NULL, embedding BLOB NOT NULL)
+            """)
+            try db
+                .execute(sql: "CREATE TABLE grdb_migrations (identifier TEXT NOT NULL PRIMARY KEY)")
+            try db
+                .execute(
+                    sql: "INSERT INTO grdb_migrations (identifier) VALUES ('createVoiceprint')"
+                )
+            for (name, embedding) in [
+                ("Zwag", [Float(1), 0]),
+                ("Zwag", [Float(0), 1]),
+                ("Theo", [Float(1), 1]),
+                ("Speaker 5", [Float(-1), 0]),
+            ] {
+                try db.execute(
+                    sql: "INSERT INTO voiceprint (id, name, embedding) VALUES (?, ?, ?)",
+                    arguments: [UUID().uuidString, name, VoiceprintStore.encode(embedding)]
+                )
+            }
+        }
+
+        let store = try VoiceprintStore(path: path)
+        let enrolled = try store.enrolledPersons()
+
+        // Two distinct people; the three "Zwag" rows collapse to one person with
+        // two exemplars; the generic "Speaker 5" mint is gone.
+        #expect(enrolled.map(\.person.name) == ["Theo", "Zwag"])
+        #expect(enrolled.first(where: { $0.person.name == "Zwag" })?.exemplars.count == 2)
+        #expect(enrolled.first(where: { $0.person.name == "Theo" })?.exemplars.count == 1)
     }
 
     // MARK: embedding codec

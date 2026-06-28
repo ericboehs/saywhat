@@ -1,16 +1,18 @@
 import Foundation
 
-/// Resolves an observed speaker embedding to an enrolled ``Voiceprint`` by cosine
+/// Resolves an observed speaker embedding to an enrolled ``Person`` by cosine
 /// similarity — the matching primitive behind persistent speaker identity
 /// (DESIGN.md §6). Pure and model-free: the diarization adapter extracts the
 /// embeddings, this decides who they are, so the policy is unit-testable without
 /// touching CoreML.
 ///
-/// Speaker embeddings are L2-normalized, so cosine similarity tracks "same voice"
-/// well: same speaker scores high (~0.6–0.9), different speakers low. The default
-/// threshold is deliberately conservative — across sessions it is far better to
-/// mint a new speaker (the user can rename) than to mislabel one person as
-/// another.
+/// A person is scored by their **best** exemplar (the max over their set), not an
+/// average — so a second take of the same voice helps recognition instead of
+/// diluting it (docs/speaker-identity-exemplars.md). Speaker embeddings are
+/// L2-normalized, so cosine similarity tracks "same voice" well: same speaker
+/// scores high (~0.6–0.9), different speakers low. The default threshold is
+/// deliberately conservative — across sessions it is far better to mint a new
+/// speaker (the user can rename) than to mislabel one person as another.
 public struct VoiceprintMatcher: Sendable, Equatable {
     /// Minimum cosine similarity (in `-1...1`) for an embedding to be accepted as
     /// an enrolled speaker. Below it, the embedding is treated as a new speaker.
@@ -20,20 +22,29 @@ public struct VoiceprintMatcher: Sendable, Equatable {
         self.threshold = threshold
     }
 
-    /// The enrolled voiceprint most similar to `embedding`, if any clears the
-    /// threshold; otherwise `nil` (a new speaker). Ties keep the earlier entry.
-    public func match(_ embedding: [Float], in directory: [Voiceprint]) -> Voiceprint? {
-        var best: Voiceprint?
+    /// The enrolled person whose best exemplar is most similar to `embedding`, if
+    /// any clears the threshold; otherwise `nil` (a new speaker). Ties keep the
+    /// earlier directory entry.
+    public func match(_ embedding: [Float], in directory: [EnrolledPerson]) -> Person? {
+        var best: Person?
         var bestScore = -Float.greatestFiniteMagnitude
-        for voiceprint in directory {
-            let score = Self.cosineSimilarity(embedding, voiceprint.embedding)
+        for enrolled in directory {
+            let score = Self.bestSimilarity(embedding, enrolled.exemplars)
             if score > bestScore {
                 bestScore = score
-                best = voiceprint
+                best = enrolled.person
             }
         }
         guard let best, bestScore >= threshold else { return nil }
         return best
+    }
+
+    /// The highest cosine similarity between `embedding` and any of `exemplars`
+    /// (a person's best take); the empty set scores no-match.
+    public static func bestSimilarity(_ embedding: [Float], _ exemplars: [Voiceprint]) -> Float {
+        exemplars.reduce(-Float.greatestFiniteMagnitude) { best, exemplar in
+            max(best, cosineSimilarity(embedding, exemplar.embedding))
+        }
     }
 
     /// Cosine similarity of two vectors, in `-1...1`. Mismatched-length or empty

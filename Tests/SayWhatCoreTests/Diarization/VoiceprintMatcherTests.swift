@@ -4,8 +4,13 @@ import Testing
 
 @Suite("VoiceprintMatcher")
 struct VoiceprintMatcherTests {
-    private func voiceprint(_ name: String, _ embedding: [Float]) -> Voiceprint {
-        Voiceprint(name: name, embedding: embedding)
+    /// An enrolled person whose exemplars are the given embeddings.
+    private func enrolled(_ name: String, _ embeddings: [Float]...) -> EnrolledPerson {
+        let person = Person(name: name)
+        return EnrolledPerson(
+            person: person,
+            exemplars: embeddings.map { Voiceprint(personID: person.id, embedding: $0) }
+        )
     }
 
     // MARK: cosine similarity
@@ -31,19 +36,27 @@ struct VoiceprintMatcherTests {
 
     // MARK: match
 
-    @Test("returns the closest enrolled voiceprint above threshold")
+    @Test("returns the closest enrolled person above threshold")
     func matchesClosest() {
         let directory = [
-            voiceprint("Eric", [1, 0, 0]),
-            voiceprint("Ashley", [0, 1, 0]),
+            enrolled("Eric", [1, 0, 0]),
+            enrolled("Ashley", [0, 1, 0]),
         ]
         #expect(VoiceprintMatcher().match([0.9, 0.1, 0], in: directory)?.name == "Eric")
         #expect(VoiceprintMatcher().match([0.1, 0.95, 0], in: directory)?.name == "Ashley")
     }
 
+    @Test("a person is scored by their best exemplar, not an average")
+    func scoresBestExemplar() {
+        // Eric's second take points away from the query; his first matches it
+        // exactly. The best (not the mean) is what counts.
+        let directory = [enrolled("Eric", [1, 0], [0, 1])]
+        #expect(VoiceprintMatcher().match([1, 0], in: directory)?.name == "Eric")
+    }
+
     @Test("returns nil when nothing clears the threshold (a new speaker)")
     func noMatchBelowThreshold() {
-        let directory = [voiceprint("Eric", [1, 0])]
+        let directory = [enrolled("Eric", [1, 0])]
         #expect(VoiceprintMatcher().match([0, 1], in: directory) == nil)
     }
 
@@ -54,7 +67,7 @@ struct VoiceprintMatcherTests {
 
     @Test("a lower threshold admits a weaker match")
     func tunableThreshold() {
-        let directory = [voiceprint("Eric", [1, 1])]
+        let directory = [enrolled("Eric", [1, 1])]
         let query: [Float] = [1, 0] // cosine ≈ 0.707
         #expect(VoiceprintMatcher(threshold: 0.8).match(query, in: directory) == nil)
         #expect(VoiceprintMatcher(threshold: 0.6).match(query, in: directory)?.name == "Eric")
@@ -63,8 +76,8 @@ struct VoiceprintMatcherTests {
     @Test("ties keep the earlier entry")
     func tiesKeepFirst() {
         let directory = [
-            voiceprint("First", [1, 0]),
-            voiceprint("Second", [1, 0]),
+            enrolled("First", [1, 0]),
+            enrolled("Second", [1, 0]),
         ]
         #expect(VoiceprintMatcher().match([1, 0], in: directory)?.name == "First")
     }

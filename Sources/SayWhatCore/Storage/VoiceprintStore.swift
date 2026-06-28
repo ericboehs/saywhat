@@ -1,14 +1,17 @@
 import Foundation
 import GRDB
 
-/// On-device SQLite store for enrolled speaker ``Voiceprint``s — the persistence
-/// behind cross-session speaker identity (DESIGN.md §6). Strictly local: nothing
-/// here ever leaves the machine (the on-device invariant, CLAUDE.md).
+/// On-device SQLite store for enrolled speakers — the persistence behind
+/// cross-session identity (DESIGN.md §6). Strictly local: nothing here ever leaves
+/// the machine (the on-device invariant, CLAUDE.md).
 ///
-/// The store owns only the persistence concern; matching policy stays in
-/// ``VoiceprintMatcher``. The embedding is written as a raw little-endian Float32
-/// BLOB rather than JSON — compact, and portability isn't a concern since every
-/// target is Apple Silicon.
+/// Identity is modelled as a ``Person`` owning a set of ``Voiceprint`` exemplars
+/// (docs/speaker-identity-exemplars.md): the `person` table holds the name, the
+/// `voiceprint` table holds each take's embedding and points back via `person_id`.
+/// An exemplar with a null `person_id` is an un-named mint and is never persisted
+/// here — minting stays in memory until the user names it. The embedding is a raw
+/// little-endian Float32 BLOB (compact; portability is moot, every target is Apple
+/// Silicon). Matching policy stays in ``VoiceprintMatcher``.
 public struct VoiceprintStore: Sendable {
     private let database: DatabaseQueue
 
@@ -33,33 +36,127 @@ public struct VoiceprintStore: Sendable {
                 table.column("embedding", .blob).notNull()
             }
         }
+        // A prior build added this column; re-registered so databases that already
+        // applied it stay consistent with the migrator. Vestigial under the
+        // exemplar model (reinforcement counts return in a later phase).
+        migrator.registerMigration("addVoiceprintCount") { db in
+            try db.alter(table: "voiceprint") { table in
+                table.add(column: "count", .integer).notNull().defaults(to: 1)
+            }
+        }
+        // Move to the Person ⟶ exemplars model: a `person` table owns the name,
+        // each voiceprint points back via `person_id`. Existing named rows are
+        // grouped one person per distinct name (so three "Zwag" rows become one
+        // Zwag with three exemplars); stale generic `Speaker N` mints are dropped
+        // — they were never real identities, just per-session labels that leaked
+        // into persistence and re-polluted matching.
+        migrator.registerMigration("addPersonExemplars") { db in
+            try db.create(table: "person") { table in
+                table.primaryKey("id", .text)
+                table.column("name", .text).notNull()
+            }
+            try db.alter(table: "voiceprint") { table in
+                table.add(column: "person_id", .text)
+            }
+            var personIDByName: [String: String] = [:]
+            for row in try Row.fetchAll(db, sql: "SELECT id, name FROM voiceprint") {
+                let voiceprintID: String = row["id"]
+                let name: String = row["name"]
+                if isGenericSpeakerName(name) {
+                    try db.execute(
+                        sql: "DELETE FROM voiceprint WHERE id = ?",
+                        arguments: [voiceprintID]
+                    )
+                    continue
+                }
+                let personID: String
+                if let existing = personIDByName[name] {
+                    personID = existing
+                } else {
+                    personID = UUID().uuidString
+                    personIDByName[name] = personID
+                    try db.execute(
+                        sql: "INSERT INTO person (id, name) VALUES (?, ?)",
+                        arguments: [personID, name]
+                    )
+                }
+                try db.execute(
+                    sql: "UPDATE voiceprint SET person_id = ? WHERE id = ?",
+                    arguments: [personID, voiceprintID]
+                )
+            }
+            try db.alter(table: "voiceprint") { table in
+                table.drop(column: "name")
+            }
+        }
         try migrator.migrate(database)
     }
 
-    /// Every enrolled voiceprint, ordered by name for a stable directory.
-    public func all() throws -> [Voiceprint] {
+    // MARK: persons
+
+    /// Every enrolled person with their exemplars, ordered by name for a stable
+    /// directory. Persons with no exemplars are omitted (nothing to match against).
+    public func enrolledPersons() throws -> [EnrolledPerson] {
         try database.read { db in
-            try Row
-                .fetchAll(db, sql: "SELECT id, name, embedding FROM voiceprint ORDER BY name")
+            let persons = try Row
+                .fetchAll(db, sql: "SELECT id, name FROM person ORDER BY name")
+                .compactMap(Self.person(from:))
+            let exemplars = try Row
+                .fetchAll(
+                    db,
+                    sql: "SELECT id, person_id, embedding FROM voiceprint WHERE person_id IS NOT NULL"
+                )
                 .compactMap(Self.voiceprint(from:))
+            let byPerson = Dictionary(grouping: exemplars, by: \.personID)
+            return persons.compactMap { person in
+                guard let prints = byPerson[person.id], !prints.isEmpty else { return nil }
+                return EnrolledPerson(person: person, exemplars: prints)
+            }
         }
     }
 
-    /// Insert `voiceprint`, replacing any existing row with the same id.
+    /// The person with this exact name, if one is enrolled — the lookup behind
+    /// "rename to an existing name binds to that person instead of forking one".
+    public func person(named name: String) throws -> Person? {
+        try database.read { db in
+            try Row
+                .fetchOne(
+                    db,
+                    sql: "SELECT id, name FROM person WHERE name = ? LIMIT 1",
+                    arguments: [name]
+                )
+                .flatMap(Self.person(from:))
+        }
+    }
+
+    /// Insert `person`, replacing any existing row with the same id.
+    public func savePerson(_ person: Person) throws {
+        try database.write { db in
+            try db.execute(
+                sql: "INSERT OR REPLACE INTO person (id, name) VALUES (?, ?)",
+                arguments: [person.id.uuidString, person.name]
+            )
+        }
+    }
+
+    // MARK: exemplars
+
+    /// Insert `voiceprint`, replacing any existing row with the same id. A null
+    /// `personID` stores an un-owned exemplar; callers attach it to a person first.
     public func save(_ voiceprint: Voiceprint) throws {
         try database.write { db in
             try db.execute(
-                sql: "INSERT OR REPLACE INTO voiceprint (id, name, embedding) VALUES (?, ?, ?)",
+                sql: "INSERT OR REPLACE INTO voiceprint (id, person_id, embedding) VALUES (?, ?, ?)",
                 arguments: [
                     voiceprint.id.uuidString,
-                    voiceprint.name,
+                    voiceprint.personID?.uuidString,
                     Self.encode(voiceprint.embedding),
                 ]
             )
         }
     }
 
-    /// Remove the voiceprint with `id` (a no-op if it isn't present).
+    /// Remove the exemplar with `id` (a no-op if it isn't present).
     public func delete(id: UUID) throws {
         try database.write { db in
             try db.execute(sql: "DELETE FROM voiceprint WHERE id = ?", arguments: [id.uuidString])
@@ -68,14 +165,30 @@ public struct VoiceprintStore: Sendable {
 
     // MARK: row <-> value
 
-    /// Reconstruct a ``Voiceprint`` from a row, skipping any row whose id isn't a
-    /// valid UUID (a corrupt write should drop one entry, not fail the whole read).
+    /// Reconstruct a ``Person`` from a row, skipping any whose id isn't a valid
+    /// UUID (a corrupt write should drop one entry, not fail the whole read).
+    private static func person(from row: Row) -> Person? {
+        let idText: String = row["id"]
+        guard let id = UUID(uuidString: idText) else { return nil }
+        return Person(id: id, name: row["name"])
+    }
+
+    /// Reconstruct a ``Voiceprint`` from a row, skipping any whose id isn't a valid
+    /// UUID. A present-but-invalid `person_id` reads as an un-owned exemplar.
     private static func voiceprint(from row: Row) -> Voiceprint? {
         let idText: String = row["id"]
         guard let id = UUID(uuidString: idText) else { return nil }
-        let name: String = row["name"]
+        let personIDText: String? = row["person_id"]
+        let personID = personIDText.flatMap(UUID.init(uuidString:))
         let embedding: Data = row["embedding"]
-        return Voiceprint(id: id, name: name, embedding: decode(embedding))
+        return Voiceprint(id: id, personID: personID, embedding: decode(embedding))
+    }
+
+    /// Whether `name` is an auto-generated `Speaker N` label rather than a real name.
+    private static func isGenericSpeakerName(_ name: String) -> Bool {
+        let prefix = "Speaker "
+        guard name.hasPrefix(prefix) else { return false }
+        return Int(name.dropFirst(prefix.count)) != nil
     }
 
     /// Pack a Float32 vector into its raw little-endian bytes.
