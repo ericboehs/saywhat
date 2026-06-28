@@ -265,6 +265,35 @@ struct FinalPassTests {
         #expect(outcome.speakers[1]?.name == "Speaker 1")
     }
 
+    @Test("each remote utterance carries its own voiceprint, not the group's")
+    func attributesUtteranceVoiceprints() async throws {
+        let session = makeSession()
+        try session.createDirectory()
+        try await writeTrack(.system, in: session, seconds: 2)
+        defer { try? FileManager.default.removeItem(at: session.directory) }
+
+        let store = try VoiceprintStore()
+        try enroll(store, "Eric", [1, 0])
+        let timeline = SpeakerTimeline(turns: [
+            SpeakerTurn(speaker: 0, range: .seconds(0) ..< .seconds(1)),
+            SpeakerTurn(speaker: 1, range: .seconds(1) ..< .seconds(2)),
+        ])
+        let systemScript = [script(.system, "hello", 0, 1), script(.system, "hi", 1, 2)]
+        let pass = FinalPass(
+            diarizer: FakeDiarizer(timeline: timeline),
+            store: store,
+            embedder: ScriptedEmbedder([[0.99, 0.01], [0, 1]]),
+            makeTranscriber: { source in
+                FakeTranscriber(source: source, script: source == .system ? systemScript : [])
+            }
+        )
+
+        // Each remote utterance (ids 0,1) is attributed the embedding of the turn it
+        // overlaps — its *own* voice, so a mis-grouped one can be reassigned later.
+        let prints = try await pass.run(session).utteranceVoiceprints
+        #expect([prints[0]?.embedding, prints[1]?.embedding] == [[0.99, 0.01], [0, 1]])
+    }
+
     @Test("splits one diarizer slot fused across two voices into two speakers")
     func splitsFusedSlot() async throws {
         let session = makeSession()

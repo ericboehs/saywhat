@@ -43,10 +43,20 @@ public struct FinalPass: Sendable {
         /// come from re-segmenting the diarizer's slots by voice, so two people the
         /// diarizer fused into one slot surface as two distinct groups here.
         public let speakers: [Int: ResolvedSpeaker]
+        /// Utterance id → that remote utterance's *own* voice vector (the embedded
+        /// turn it overlaps most), so a single mis-grouped segment can be reassigned
+        /// and have its voice bound to the right person — even when its group's
+        /// exemplar belongs to someone else. Mic (`you`) utterances carry none.
+        public let utteranceVoiceprints: [Int: Voiceprint]
 
-        public init(transcript: Transcript, speakers: [Int: ResolvedSpeaker] = [:]) {
+        public init(
+            transcript: Transcript,
+            speakers: [Int: ResolvedSpeaker] = [:],
+            utteranceVoiceprints: [Int: Voiceprint] = [:]
+        ) {
             self.transcript = transcript
             self.speakers = speakers
+            self.utteranceVoiceprints = utteranceVoiceprints
         }
     }
 
@@ -125,10 +135,55 @@ public struct FinalPass: Sendable {
         let transcript = merger.merge(
             mic: mic,
             system: system,
-            remoteSpeakers: resegmented.timeline,
-            names: resegmented.speakers.mapValues(\.name)
+            remoteSpeakers: resegmented.resegmentation.timeline,
+            names: resegmented.resegmentation.speakers.mapValues(\.name)
         )
-        return Outcome(transcript: transcript, speakers: resegmented.speakers)
+        return Outcome(
+            transcript: transcript,
+            speakers: resegmented.resegmentation.speakers,
+            utteranceVoiceprints: Self.utteranceVoiceprints(
+                for: transcript,
+                timeline: resegmented.resegmentation.timeline,
+                embeddings: resegmented.embeddings
+            )
+        )
+    }
+
+    /// Attribute each remote utterance its *own* voice vector: the embedded turn of
+    /// the utterance's group that overlaps it most in time. This is the segment's
+    /// representative voiceprint — distinct from the group's exemplar — so a
+    /// mis-grouped segment can be reassigned to (and teach) the right person even
+    /// when its group resolved to someone else. Mic utterances and utterances no
+    /// embedded turn covers are simply absent.
+    private static func utteranceVoiceprints(
+        for transcript: Transcript,
+        timeline: SpeakerTimeline,
+        embeddings: [Int: [Float]]
+    ) -> [Int: Voiceprint] {
+        guard !embeddings.isEmpty else { return [:] }
+        var result: [Int: Voiceprint] = [:]
+        for utterance in transcript.utterances {
+            guard case let .remote(group) = utterance.speaker else { continue }
+            var best: (vector: [Float], overlap: Double)?
+            for (index, turn) in timeline.turns.enumerated() {
+                guard turn.speaker == group, let vector = embeddings[index] else { continue }
+                let seconds = Self.overlapSeconds(utterance.range, turn.range)
+                if seconds > (best?.overlap ?? 0) {
+                    best = (vector, seconds)
+                }
+            }
+            if let best {
+                result[utterance.id] = Voiceprint(embedding: best.vector)
+            }
+        }
+        return result
+    }
+
+    /// Seconds two timeline ranges overlap, `0` when they're disjoint.
+    private static func overlapSeconds(_ lhs: Range<Duration>, _ rhs: Range<Duration>) -> Double {
+        let lower = max(lhs.lowerBound, rhs.lowerBound)
+        let upper = min(lhs.upperBound, rhs.upperBound)
+        return upper > lower ? (upper - lower).seconds : 0
     }
 
     /// Re-segment the diarized timeline by **voice** and resolve each resulting
@@ -157,16 +212,17 @@ public struct FinalPass: Sendable {
     private func resegment(
         _ timeline: SpeakerTimeline,
         system frames: [AudioFrame]
-    ) async -> SpeakerResegmenter.Resegmentation {
+    ) async -> (resegmentation: SpeakerResegmenter.Resegmentation, embeddings: [Int: [Float]]) {
         let passthrough = SpeakerResegmenter.Resegmentation(timeline: timeline, speakers: [:])
-        guard let store, let embedder else { return passthrough }
-        guard let directory = try? store.enrolledPersons() else { return passthrough }
+        guard let store, let embedder else { return (passthrough, [:]) }
+        guard let directory = try? store.enrolledPersons() else { return (passthrough, [:]) }
         let embeddings = await turnEmbeddings(timeline, system: frames, using: embedder)
-        return resegmenter.resegment(
+        let resegmentation = resegmenter.resegment(
             turns: timeline.turns,
             embeddings: embeddings,
             against: directory
         )
+        return (resegmentation, embeddings)
     }
 
     /// Embed each turn's system audio into the shared identity space, keyed by the
