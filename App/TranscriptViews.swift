@@ -77,12 +77,6 @@ extension SpeakerLabel {
         }
     }
 
-    /// The remote diarizer slot, when this is a remote speaker (renameable);
-    /// `nil` for *you*, the mic track, which has no voiceprint to name.
-    var remoteSlot: Int? {
-        if case let .remote(slot) = self { slot } else { nil }
-    }
-
     /// A stable accent color per speaker so turns are scannable at a glance.
     var tint: Color {
         switch self {
@@ -97,6 +91,12 @@ extension SpeakerLabel {
 
 /// One speaker turn: a colored name header above its text. The in-flight guess
 /// renders muted and italic so the reader can tell it from settled text.
+/// Whether a name edit targets the speaker's whole group or just one segment.
+enum RenameScope: Hashable {
+    case wholeSpeaker
+    case thisSegment
+}
+
 struct SpeakerBlock: View {
     var label: SpeakerLabel
     var text: String
@@ -114,13 +114,20 @@ struct SpeakerBlock: View {
     var activeWord: Int?
     /// Seek the player to a word's start when it's clicked. `nil` disables seeking.
     var onSeek: ((Duration) -> Void)?
-    /// Commit a new name for this speaker (double-click the name to rename); `nil`
-    /// — the live view, or *you* — makes the name a plain, non-editable label.
+    /// Commit a new name for this speaker's whole group (double-click the name to
+    /// rename); `nil` — the live view, or *you* — makes the name a plain,
+    /// non-editable label.
     var onRename: ((String) -> Void)?
+    /// Commit a new name for **just this segment**, correcting one utterance the
+    /// diarizer mis-grouped; `nil` hides the per-segment option (only whole-speaker
+    /// rename is offered).
+    var onReassign: ((String) -> Void)?
 
-    /// Whether the rename popover is open, and its in-progress text.
+    /// Whether the rename popover is open, its in-progress text, and whether the
+    /// edit targets the whole speaker (default) or just this one segment.
     @State private var isRenaming = false
     @State private var draftName = ""
+    @State private var scope: RenameScope = .wholeSpeaker
     /// Whether the pointer is over a renameable name, fading in the pencil hint.
     @State private var isHovering = false
 
@@ -173,30 +180,46 @@ struct SpeakerBlock: View {
             .onHover { isHovering = $0 }
             .onTapGesture {
                 draftName = name ?? label.displayName
+                scope = .wholeSpeaker
                 isRenaming = true
             }
             .popover(isPresented: $isRenaming, arrowEdge: .bottom) {
-                renamePopover(commit: onRename)
+                renamePopover(rename: onRename)
             }
         } else {
             text
         }
     }
 
-    /// The rename editor: type a name, Return or Save persists it (and renames
-    /// every turn of this speaker); Escape/dismiss cancels.
-    private func renamePopover(commit: @escaping (String) -> Void) -> some View {
+    /// The rename editor: type a name, Return or Save persists it; Escape/dismiss
+    /// cancels. When per-segment reassignment is available, a scope picker chooses
+    /// between renaming the whole speaker (default) and correcting just this one
+    /// segment the diarizer mis-grouped.
+    private func renamePopover(rename: @escaping (String) -> Void) -> some View {
         func save() {
-            commit(draftName)
+            if scope == .thisSegment, let onReassign {
+                onReassign(draftName)
+            } else {
+                rename(draftName)
+            }
             isRenaming = false
         }
         return VStack(alignment: .leading, spacing: 8) {
-            Text("Speaker name")
-                .font(.caption)
-                .foregroundStyle(.secondary)
+            if onReassign != nil {
+                Picker("", selection: $scope) {
+                    Text("Whole speaker").tag(RenameScope.wholeSpeaker)
+                    Text("Just this segment").tag(RenameScope.thisSegment)
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+            } else {
+                Text("Speaker name")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
             TextField("Name", text: $draftName)
                 .textFieldStyle(.roundedBorder)
-                .frame(width: 200)
+                .frame(width: 220)
                 .onSubmit(save)
             HStack {
                 Spacer()
@@ -309,6 +332,9 @@ struct FinalTranscriptView: View {
     var onSeek: ((Duration) -> Void)?
     /// Rename a remote speaker (by slot) to a persistent name; `nil` disables it.
     var onRename: ((Int, String) -> Void)?
+    /// Reassign a single utterance (by id) to a person, correcting one mis-grouped
+    /// segment; `nil` disables the per-segment option.
+    var onReassign: ((Int, String) -> Void)?
 
     var body: some View {
         ScrollViewReader { proxy in
@@ -328,7 +354,8 @@ struct FinalTranscriptView: View {
                                 activeWord: cursor?.utteranceID == utterance.id ? cursor?
                                     .wordIndex : nil,
                                 onSeek: onSeek,
-                                onRename: renameHandler(for: utterance.speaker)
+                                onRename: renameHandler(for: utterance.speaker),
+                                onReassign: reassignHandler(for: utterance)
                             )
                             .id(utterance.id)
                         }
@@ -350,5 +377,12 @@ struct FinalTranscriptView: View {
     private func renameHandler(for speaker: SpeakerLabel) -> ((String) -> Void)? {
         guard let onRename, let slot = speaker.remoteSlot else { return nil }
         return { name in onRename(slot, name) }
+    }
+
+    /// A per-segment reassignment closure, capturing the utterance's id; only
+    /// remote utterances (which carry a voiceprint) can be reassigned.
+    private func reassignHandler(for utterance: Transcript.Utterance) -> ((String) -> Void)? {
+        guard let onReassign, utterance.speaker.remoteSlot != nil else { return nil }
+        return { name in onReassign(utterance.id, name) }
     }
 }
