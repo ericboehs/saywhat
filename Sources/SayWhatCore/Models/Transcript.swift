@@ -9,9 +9,9 @@ import Foundation
 /// ``SpeakerLabel`` and a time range on the session timeline, and consecutive
 /// utterances from the same speaker are coalesced into one block. See DESIGN.md
 /// §3 (two pipelines) and §5.
-public struct Transcript: Sendable, Equatable {
+public struct Transcript: Sendable, Equatable, Codable {
     /// One speaker's contiguous run of finalized speech.
-    public struct Utterance: Sendable, Equatable, Identifiable {
+    public struct Utterance: Sendable, Equatable, Codable, Identifiable {
         /// Stable position in the transcript (0-based), usable as a `ForEach` id.
         public let id: Int
         /// Who spoke — channel-coarse (``SpeakerLabel/you``) plus the remote slot
@@ -69,12 +69,46 @@ public struct Transcript: Sendable, Equatable {
     /// A copy with every turn from remote `slot` relabeled to `name` — the
     /// speaker's persistent identity just changed (the user named them). Turns
     /// from other speakers are untouched; ids, text, and timings are preserved.
+    ///
+    /// When another remote slot already shows `name` — i.e. the diarizer split one
+    /// person into two slots and the user is naming the second the same — this
+    /// slot's turns **adopt that slot's color**, so the merged speaker reads in one
+    /// color throughout (matching the single-segment ``reassigningUtterance(_:to:)``;
+    /// the caller binds both slots' voiceprints to the one person). Renaming to a
+    /// fresh name keeps the slot's current color.
     public func renamingSpeaker(_ slot: Int, to name: String) -> Transcript {
-        Transcript(utterances: utterances.map { utterance in
+        let adopted = utterances.first {
+            $0.speaker != .remote(slot) && $0.speaker.remoteSlot != nil && $0.speakerName == name
+        }?.speaker
+        return Transcript(utterances: utterances.map { utterance in
             guard utterance.speaker == .remote(slot) else { return utterance }
             return Utterance(
                 id: utterance.id,
-                speaker: utterance.speaker,
+                speaker: adopted ?? utterance.speaker,
+                speakerName: name,
+                text: utterance.text,
+                range: utterance.range,
+                words: utterance.words
+            )
+        })
+    }
+
+    /// A copy with the single utterance `id` reassigned to `name` — correcting one
+    /// segment the diarizer mis-grouped, without touching the rest of its group
+    /// (the whole-group ``renamingSpeaker(_:to:)`` is the default; this is the
+    /// surgical override). The segment also adopts the color/slot of any other
+    /// remote block already shown under `name`, so the same person reads in one
+    /// color throughout; a brand-new name keeps the segment's current color. Ids,
+    /// text, and timings are preserved.
+    public func reassigningUtterance(_ id: Int, to name: String) -> Transcript {
+        let adopted = utterances.first {
+            $0.speakerName == name && $0.speaker.remoteSlot != nil
+        }?.speaker
+        return Transcript(utterances: utterances.map { utterance in
+            guard utterance.id == id else { return utterance }
+            return Utterance(
+                id: utterance.id,
+                speaker: adopted ?? utterance.speaker,
                 speakerName: name,
                 text: utterance.text,
                 range: utterance.range,
