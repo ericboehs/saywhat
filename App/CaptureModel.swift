@@ -29,10 +29,10 @@ final class CaptureModel {
     /// The authoritative transcript from the final pass, shown once a recording
     /// has been re-transcribed and diarized at meeting end (nil until then).
     private(set) var finalTranscript: Transcript?
-    /// Remote slot → the persistent voiceprint the final pass resolved it to, so
-    /// a rename can write the chosen name back onto the matched row. Empty until
-    /// the final pass runs (and when identity resolution was skipped).
-    private var speakers: [Int: Voiceprint] = [:]
+    /// Remote slot → how the final pass resolved it (matched person or un-named
+    /// mint), so naming a slot can bind its exemplar to a person. Empty until the
+    /// final pass runs (and when identity resolution was skipped).
+    private var speakers: [Int: ResolvedSpeaker] = [:]
     /// Remote slot → the enrolled name the **live** namer recognized mid-meeting,
     /// shown on the live transcript so a known voice reads as "Eric" before the
     /// final pass confirms it. Empty until a voice is matched; reset each start.
@@ -85,8 +85,10 @@ final class CaptureModel {
         FinalPass(
             diarizer: finalDiarizer,
             store: voiceprintStore,
-            resolver: SpeakerResolver(matcher: VoiceprintMatcher(threshold: AppSettings
-                    .matchThreshold)),
+            resegmenter: SpeakerResegmenter(
+                resolver: SpeakerResolver(matcher: VoiceprintMatcher(threshold: AppSettings
+                        .matchThreshold))
+            ),
             embedder: speakerEmbedder,
             makeTranscriber: { ParakeetTranscriber(source: $0) }
         )
@@ -225,22 +227,31 @@ final class CaptureModel {
         finalizeStatus = nil
     }
 
-    /// Rename the remote speaker in `slot` to `name`, persisting it onto the
-    /// voiceprint the final pass matched so every future meeting recognizes that
-    /// voice by the chosen name — and relabel the speaker's turns in the
-    /// transcript on screen now. A blank name, an unknown slot (no resolved
-    /// voiceprint), or a storage failure is a no-op (the latter surfaced).
+    /// Name the remote speaker in `slot`, binding this meeting's exemplar of their
+    /// voice to a ``Person`` (an existing one if the name already exists, else a
+    /// new one) so every future meeting recognizes that voice — and relabel the
+    /// speaker's turns in the transcript on screen now. A blank name, an unknown
+    /// slot (no resolved speaker), or a storage failure is a no-op (the latter
+    /// surfaced).
     func renameSpeaker(slot: Int, to name: String) {
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty, var voiceprint = speakers[slot] else { return }
-        voiceprint.name = trimmed
+        guard !trimmed.isEmpty, let store = voiceprintStore, let resolved = speakers[slot] else {
+            return
+        }
         do {
-            try voiceprintStore?.save(voiceprint)
+            let person = try store.person(named: trimmed) ?? {
+                let created = Person(name: trimmed)
+                try store.savePerson(created)
+                return created
+            }()
+            var exemplar = resolved.exemplar
+            exemplar.personID = person.id
+            try store.save(exemplar)
+            speakers[slot] = ResolvedSpeaker(person: person, exemplar: exemplar, name: trimmed)
         } catch {
             errorMessage = "rename speaker: \(error)"
             return
         }
-        speakers[slot] = voiceprint
         finalTranscript = finalTranscript?.renamingSpeaker(slot, to: trimmed)
     }
 

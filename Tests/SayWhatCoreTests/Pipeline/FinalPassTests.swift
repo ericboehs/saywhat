@@ -107,6 +107,13 @@ struct FinalPassTests {
         return RecordingSession(directory: dir)
     }
 
+    /// Enroll a person with a single exemplar embedding into `store`.
+    private func enroll(_ store: VoiceprintStore, _ name: String, _ embedding: [Float]) throws {
+        let person = Person(name: name)
+        try store.savePerson(person)
+        try store.save(Voiceprint(personID: person.id, embedding: embedding))
+    }
+
     private func script(
         _ source: CaptureSource,
         _ text: String,
@@ -217,7 +224,7 @@ struct FinalPassTests {
         #expect(transcript.utterances.map(\.text) == ["solo"])
     }
 
-    @Test("resolves a known speaker to their enrolled name and persists newcomers")
+    @Test("resolves a known speaker to their name and labels newcomers without persisting them")
     func resolvesIdentities() async throws {
         let session = makeSession()
         try session.createDirectory()
@@ -225,11 +232,12 @@ struct FinalPassTests {
         defer { try? FileManager.default.removeItem(at: session.directory) }
 
         let store = try VoiceprintStore()
-        try store.save(Voiceprint(name: "Eric", embedding: [1, 0]))
+        try enroll(store, "Eric", [1, 0])
 
         // Slot 0's audio (0..1s) ≈ enrolled Eric; slot 1's (1..2s) matches nobody
-        // and should be minted. Identity comes from the embedder over each slot's
-        // audio — the embedder scripts slot 0 then slot 1 in sorted order.
+        // and should mint an un-named speaker. Identity comes from the embedder
+        // over each slot's audio — the embedder scripts slot 0 then slot 1 in
+        // sorted order.
         let timeline = SpeakerTimeline(turns: [
             SpeakerTurn(speaker: 0, range: .seconds(0) ..< .seconds(1)),
             SpeakerTurn(speaker: 1, range: .seconds(1) ..< .seconds(2)),
@@ -247,12 +255,52 @@ struct FinalPassTests {
         let outcome = try await pass.run(session)
 
         #expect(outcome.transcript.utterances.map(\.speakerName) == ["Eric", "Speaker 1"])
-        // The newcomer is persisted so the same voice is recognized next time.
-        #expect(try store.all().map(\.name).sorted() == ["Eric", "Speaker 1"])
-        // Each remote slot surfaces the voiceprint it resolved to, so the UI can
-        // target the right row for a rename.
+        // The newcomer is *not* persisted — an un-named mint stays in memory until
+        // the user names it, so the directory keeps only the one enrolled person.
+        #expect(try store.enrolledPersons().map(\.person.name) == ["Eric"])
+        // Each remote slot surfaces how it resolved, so the UI can name it.
+        #expect(outcome.speakers[0]?.person?.name == "Eric")
         #expect(outcome.speakers[0]?.name == "Eric")
+        #expect(outcome.speakers[1]?.person == nil)
         #expect(outcome.speakers[1]?.name == "Speaker 1")
+    }
+
+    @Test("splits one diarizer slot fused across two voices into two speakers")
+    func splitsFusedSlot() async throws {
+        let session = makeSession()
+        try session.createDirectory()
+        try await writeTrack(.system, in: session, seconds: 2)
+        defer { try? FileManager.default.removeItem(at: session.directory) }
+
+        let store = try VoiceprintStore()
+        try enroll(store, "Theo", [1, 0])
+
+        // The Theo+MKBHD failure: the diarizer put both turns in *one* slot (0).
+        // Per-turn embedding (Theo-ish then a stranger) must re-segment them into
+        // two groups, name the first Theo, and mint the second.
+        let timeline = SpeakerTimeline(turns: [
+            SpeakerTurn(speaker: 0, range: .seconds(0) ..< .seconds(1)),
+            SpeakerTurn(speaker: 0, range: .seconds(1) ..< .seconds(2)),
+        ])
+        let systemScript = [
+            script(.system, "context lives", 0, 1),
+            script(.system, "slate truck", 1, 2),
+        ]
+        let pass = FinalPass(
+            diarizer: FakeDiarizer(timeline: timeline),
+            store: store,
+            embedder: ScriptedEmbedder([[0.98, 0.02], [0, 1]]),
+            makeTranscriber: { source in
+                FakeTranscriber(source: source, script: source == .system ? systemScript : [])
+            }
+        )
+
+        let outcome = try await pass.run(session)
+
+        #expect(outcome.transcript.utterances.map(\.speakerName) == ["Theo", "Speaker 1"])
+        #expect(outcome.transcript.utterances.map(\.text) == ["context lives", "slate truck"])
+        #expect(outcome.speakers[0]?.person?.name == "Theo")
+        #expect(outcome.speakers[1]?.person == nil)
     }
 
     @Test("without an embedder, identities are left unresolved")
@@ -263,7 +311,7 @@ struct FinalPassTests {
         defer { try? FileManager.default.removeItem(at: session.directory) }
 
         let store = try VoiceprintStore()
-        try store.save(Voiceprint(name: "Eric", embedding: [1, 0]))
+        try enroll(store, "Eric", [1, 0])
 
         let timeline = SpeakerTimeline(turns: [
             SpeakerTurn(speaker: 0, range: .seconds(0) ..< .seconds(1)),
@@ -294,7 +342,7 @@ struct FinalPassTests {
         defer { try? FileManager.default.removeItem(at: session.directory) }
 
         let store = try VoiceprintStore()
-        try store.save(Voiceprint(name: "Eric", embedding: [1, 0]))
+        try enroll(store, "Eric", [1, 0])
 
         // The slot's only turn (5..6s) falls past the one second of recorded
         // audio, so no frames slice into it and the embedder is never consulted —
