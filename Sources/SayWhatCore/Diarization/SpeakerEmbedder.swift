@@ -48,4 +48,19 @@ public enum SpeakerAudio {
         }
         return gathered
     }
+
+    /// The concatenated samples of `frames` overlapping a single `turn`'s range —
+    /// the clip for embedding *one* turn rather than a whole slot. Identity-driven
+    /// re-segmentation embeds per turn so it can split a slot the diarizer fused
+    /// across two voices (docs/speaker-identity-resegmentation.md).
+    public static func samples(for turn: SpeakerTurn, from frames: [AudioFrame]) -> [Float] {
+        var gathered: [Float] = []
+        for frame in frames {
+            let frameRange = frame.startOffset ..< (frame.startOffset + frame.duration)
+            if frameRange.overlap(with: turn.range) > 0 {
+                gathered.append(contentsOf: frame.samples)
+            }
+        }
+        return gathered
+    }
 }

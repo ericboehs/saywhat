@@ -1,11 +1,10 @@
 import Foundation
 
-/// A persisted, named speaker — the unit of **cross-session identity**. A
-/// voiceprint pairs a stable id and display name with the 256-dim speaker
-/// embedding FluidAudio's `SpeakerManager` extracts; matching a meeting's
-/// observed embeddings against the enrolled set is how "Eric" and "Ashley" get
-/// recognized in every future meeting instead of being relabelled per session
-/// (DESIGN.md §6 "Persistent identity").
+/// One enrolled **exemplar** of a speaker's voice: a 256-dim `wespeaker_v2`
+/// embedding tied to the ``Person`` it belongs to. A person owns a *set* of these
+/// (one per recorded take); matching scores a slot against a person by their best
+/// exemplar, never an average, so distinct takes stay distinct (DESIGN.md §6,
+/// docs/speaker-identity-exemplars.md).
 ///
 /// This is our own value type on purpose: the storage schema and matching policy
 /// are ours, so we don't couple them to — or leak — FluidAudio's `Speaker` past
@@ -15,15 +14,18 @@ public struct Voiceprint: Sendable, Equatable, Hashable, Codable, Identifiable {
     /// Stable identity across sessions and app launches.
     public let id: UUID
 
-    /// Display name shown in the transcript (e.g. "Eric").
-    public var name: String
+    /// The enrolled ``Person`` this exemplar belongs to, or `nil` for an un-named
+    /// mint — a slot the final pass matched nobody for, held in memory until the
+    /// user names it. Un-named exemplars are never cross-session match candidates
+    /// (that's what kept the directory from filling with orphan `Speaker N` rows).
+    public var personID: UUID?
 
     /// 256-dim L2-normalized speaker embedding (``SpeakerManager`` dimension).
     public let embedding: [Float]
 
-    public init(id: UUID = UUID(), name: String, embedding: [Float]) {
+    public init(id: UUID = UUID(), personID: UUID? = nil, embedding: [Float]) {
         self.id = id
-        self.name = name
+        self.personID = personID
         self.embedding = embedding
     }
 }

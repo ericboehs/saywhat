@@ -26,25 +26,46 @@ final class CaptureModel {
     /// attributed by channel (mic = you, system = remote).
     private(set) var transcript = LiveTranscript()
 
+    // Editable session state — written by the recording lifecycle and by the
+    // editing/library extension (``CaptureModel+Editing``), so its setters are
+    // module-internal rather than `private(set)`. The live/metering state above
+    // stays read-only to the rest of the app.
+
     /// The authoritative transcript from the final pass, shown once a recording
     /// has been re-transcribed and diarized at meeting end (nil until then).
-    private(set) var finalTranscript: Transcript?
-    /// Remote slot → the persistent voiceprint the final pass resolved it to, so
-    /// a rename can write the chosen name back onto the matched row. Empty until
-    /// the final pass runs (and when identity resolution was skipped).
-    private var speakers: [Int: Voiceprint] = [:]
+    var finalTranscript: Transcript?
+    /// Remote slot → how the final pass resolved it (matched person or un-named
+    /// mint), so naming a slot can bind its exemplar to a person. Empty until the
+    /// final pass runs (and when identity resolution was skipped).
+    var speakers: [Int: ResolvedSpeaker] = [:]
+    /// Utterance id → that segment's own voiceprint, from the final pass. Lets a
+    /// single mis-grouped segment be reassigned to (and teach) the right person,
+    /// even when its group's exemplar belongs to someone else. Empty until the pass
+    /// runs; reloaded with a reopened session.
+    var utteranceVoiceprints: [Int: Voiceprint] = [:]
+    /// Persists the authoritative transcript beside the current session's audio so
+    /// hand-corrected speaker labels survive reopening. Set when the final pass
+    /// finishes (or a saved session is reopened); `nil` before then.
+    var transcriptStore: TranscriptStore?
     /// Remote slot → the enrolled name the **live** namer recognized mid-meeting,
     /// shown on the live transcript so a known voice reads as "Eric" before the
     /// final pass confirms it. Empty until a voice is matched; reset each start.
     private(set) var liveNames: [Int: String] = [:]
     /// Non-nil while the final pass runs, narrating its current stage.
-    private(set) var finalizeStatus: String?
+    var finalizeStatus: String?
     /// Plays the finished recording's mixed audio so the final transcript can be
     /// followed karaoke-style; set once the final pass produces a transcript.
-    private(set) var playback: PlaybackController?
+    var playback: PlaybackController?
 
-    private(set) var sessionPath: String?
-    private(set) var errorMessage: String?
+    /// Past recordings for the history sidebar, newest first. Refreshed on launch
+    /// and whenever a recording finalizes.
+    var sessions: [RecordedSession] = []
+    /// The id of the session whose transcript is on screen — the just-finished
+    /// recording's, or a past one reopened from the sidebar; `nil` before any.
+    var selectedSessionID: String?
+
+    var sessionPath: String?
+    var errorMessage: String?
 
     private let microphone = MicrophoneCapture()
     private let system = SystemAudioCapture()
@@ -65,8 +86,9 @@ final class CaptureModel {
 
     /// The persistent voiceprint directory: lets the final pass name remote
     /// speakers ("Eric") the same way across meetings, and where a rename is
-    /// written back. A store failure degrades to generic labels.
-    private let voiceprintStore = CaptureModel.voiceprintStore()
+    /// written back. A store failure degrades to generic labels. Read by the
+    /// editing extension, so module-internal rather than private.
+    let voiceprintStore = CaptureModel.voiceprintStore()
 
     /// The shared `wespeaker_v2` identity embedder — the one space both the live
     /// namer and the final pass recognize voices in. Held once so its CoreML model
@@ -85,8 +107,10 @@ final class CaptureModel {
         FinalPass(
             diarizer: finalDiarizer,
             store: voiceprintStore,
-            resolver: SpeakerResolver(matcher: VoiceprintMatcher(threshold: AppSettings
-                    .matchThreshold)),
+            resegmenter: SpeakerResegmenter(
+                resolver: SpeakerResolver(matcher: VoiceprintMatcher(threshold: AppSettings
+                        .matchThreshold))
+            ),
             embedder: speakerEmbedder,
             makeTranscriber: { ParakeetTranscriber(source: $0) }
         )
@@ -125,6 +149,11 @@ final class CaptureModel {
         finalizeStatus = nil
         playback?.pause()
         playback = nil
+        // The live recording isn't a saved session yet; clear any reopened one so
+        // the detail pane follows the recording until it finalizes.
+        selectedSessionID = nil
+        utteranceVoiceprints = [:]
+        transcriptStore = nil
         remoteSpeakers = SpeakerTimeline()
         latestTime = .zero
         transcriptLog = nil
@@ -136,6 +165,22 @@ final class CaptureModel {
 
         let session = RecordingSession(directory: Self.newSessionDirectory())
         sessionPath = session.directory.path
+
+        // Surface the recording in the sidebar the moment it starts, selected, so it
+        // doesn't pop in only at the end. SessionLibrary won't list it yet (no audio
+        // on disk), so prepend a live entry; refreshSessions() replaces it with the
+        // finalized one (same id) once the pass writes transcript.json.
+        let id = session.directory.lastPathComponent
+        selectedSessionID = id
+        sessions.insert(
+            RecordedSession(
+                id: id,
+                directory: session.directory,
+                date: Date(),
+                hasTranscript: false
+            ),
+            at: 0
+        )
 
         recording = Task { [microphone, system] in
             do {
@@ -212,6 +257,14 @@ final class CaptureModel {
             }
             finalTranscript = outcome.transcript
             speakers = outcome.speakers
+            utteranceVoiceprints = outcome.utteranceVoiceprints
+            // Persist the authoritative transcript beside its audio so later edits
+            // (and reopening the session) start from this, not a fresh re-run.
+            transcriptStore = TranscriptStore(directory: session.directory)
+            persist()
+            // Surface the just-finished recording in the sidebar and select it.
+            selectedSessionID = session.directory.lastPathComponent
+            refreshSessions()
             // Make the saved audio playable so the transcript can be followed
             // along; a failure here just leaves playback unavailable.
             let controller = PlaybackController()
@@ -223,25 +276,6 @@ final class CaptureModel {
             errorMessage = "finalize: \(error)"
         }
         finalizeStatus = nil
-    }
-
-    /// Rename the remote speaker in `slot` to `name`, persisting it onto the
-    /// voiceprint the final pass matched so every future meeting recognizes that
-    /// voice by the chosen name — and relabel the speaker's turns in the
-    /// transcript on screen now. A blank name, an unknown slot (no resolved
-    /// voiceprint), or a storage failure is a no-op (the latter surfaced).
-    func renameSpeaker(slot: Int, to name: String) {
-        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty, var voiceprint = speakers[slot] else { return }
-        voiceprint.name = trimmed
-        do {
-            try voiceprintStore?.save(voiceprint)
-        } catch {
-            errorMessage = "rename speaker: \(error)"
-            return
-        }
-        speakers[slot] = voiceprint
-        finalTranscript = finalTranscript?.renamingSpeaker(slot, to: trimmed)
     }
 
     /// A reader-facing description of a final-pass stage.

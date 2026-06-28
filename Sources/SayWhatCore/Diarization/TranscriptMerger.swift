@@ -171,7 +171,14 @@ public struct TranscriptMerger: Sendable {
         names: [Int: String]
     ) -> [Atom] {
         func atom(text: String, range: Range<Duration>, words: [WordTiming]) -> Atom {
-            let slot = speakers.dominantSpeaker(in: range) ?? 0
+            // A word inside a turn goes to whoever dominated its window; one that
+            // lands in a *gap* (a brief pause no turn covers) goes to the nearest
+            // turn in time, not a fixed slot — with identity re-segmentation slot 0
+            // is a named person, and a fixed fallback would mislabel every gap word
+            // as them (the stray "Theo: what" inside another speaker's section).
+            let slot = speakers.dominantSpeaker(in: range)
+                ?? speakers.nearestSpeaker(to: range)
+                ?? 0
             return Atom(
                 label: .remote(slot),
                 name: names[slot],

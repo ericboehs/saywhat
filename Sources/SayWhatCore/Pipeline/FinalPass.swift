@@ -31,20 +31,32 @@ public struct FinalPass: Sendable {
         case merging
     }
 
-    /// Everything the pass produced: the authoritative transcript plus the
-    /// persistent ``Voiceprint`` each remote slot resolved to. The mapping lets
-    /// the UI offer to rename a speaker — writing the chosen name back onto its
-    /// voiceprint teaches every future meeting to recognize them by it. Empty
-    /// when identity resolution was skipped (no store wired, or no embeddings).
+    /// Everything the pass produced: the authoritative transcript plus how each
+    /// identity **group** resolved — a matched ``Person`` or a fresh un-named mint.
+    /// The mapping lets the UI offer to name a speaker; naming binds that group's
+    /// exemplar to a person, teaching every future meeting to recognize them.
+    /// Empty when identity resolution was skipped (no store wired, or no embeddings).
     public struct Outcome: Sendable, Equatable {
         /// The merged, timeline-ordered authoritative record.
         public let transcript: Transcript
-        /// Remote diarizer slot → the voiceprint it matched or minted.
-        public let speakers: [Int: Voiceprint]
+        /// Identity group → how it resolved (matched person or mint). The groups
+        /// come from re-segmenting the diarizer's slots by voice, so two people the
+        /// diarizer fused into one slot surface as two distinct groups here.
+        public let speakers: [Int: ResolvedSpeaker]
+        /// Utterance id → that remote utterance's *own* voice vector (the embedded
+        /// turn it overlaps most), so a single mis-grouped segment can be reassigned
+        /// and have its voice bound to the right person — even when its group's
+        /// exemplar belongs to someone else. Mic (`you`) utterances carry none.
+        public let utteranceVoiceprints: [Int: Voiceprint]
 
-        public init(transcript: Transcript, speakers: [Int: Voiceprint] = [:]) {
+        public init(
+            transcript: Transcript,
+            speakers: [Int: ResolvedSpeaker] = [:],
+            utteranceVoiceprints: [Int: Voiceprint] = [:]
+        ) {
             self.transcript = transcript
             self.speakers = speakers
+            self.utteranceVoiceprints = utteranceVoiceprints
         }
     }
 
@@ -54,7 +66,7 @@ public struct FinalPass: Sendable {
     private let makeTranscriber: MakeTranscriber
     private let budget: Budget
     private let store: VoiceprintStore?
-    private let resolver: SpeakerResolver
+    private let resegmenter: SpeakerResegmenter
     private let embedder: (any SpeakerEmbedder)?
 
     /// Minimum system audio a slot needs before we trust an identity embedding
@@ -73,8 +85,9 @@ public struct FinalPass: Sendable {
     ///   - store: the persistent voiceprint directory. When supplied, remote
     ///     speakers are resolved to (and minted into) it; `nil` skips identity
     ///     resolution entirely (generic `Speaker N` labels).
-    ///   - resolver: the slot → identity policy. Defaults to a conservative match.
-    ///   - embedder: extracts the `wespeaker_v2` identity vector for a slot's
+    ///   - resegmenter: the re-segment-by-voice + identity policy. Defaults to a
+    ///     conservative match; its threshold also governs voice clustering.
+    ///   - embedder: extracts the `wespeaker_v2` identity vector for a turn's
     ///     audio — the one space live and final recognition share. `nil` (or no
     ///     store) skips identity resolution entirely (generic `Speaker N` labels).
     public init(
@@ -83,7 +96,7 @@ public struct FinalPass: Sendable {
         merger: TranscriptMerger = TranscriptMerger(),
         budget: @escaping Budget = FinalPass.defaultBudget,
         store: VoiceprintStore? = nil,
-        resolver: SpeakerResolver = SpeakerResolver(),
+        resegmenter: SpeakerResegmenter = SpeakerResegmenter(),
         embedder: (any SpeakerEmbedder)? = nil,
         makeTranscriber: @escaping MakeTranscriber
     ) {
@@ -92,7 +105,7 @@ public struct FinalPass: Sendable {
         self.merger = merger
         self.budget = budget
         self.store = store
-        self.resolver = resolver
+        self.resegmenter = resegmenter
         self.embedder = embedder
         self.makeTranscriber = makeTranscriber
     }
@@ -118,74 +131,117 @@ public struct FinalPass: Sendable {
         let remoteSpeakers = try await diarize(systemFrames)
 
         onProgress?(.merging)
-        let speakers = await resolveIdentities(remoteSpeakers, system: systemFrames)
+        let resegmented = await resegment(remoteSpeakers, system: systemFrames)
         let transcript = merger.merge(
             mic: mic,
             system: system,
-            remoteSpeakers: remoteSpeakers,
-            names: speakers.mapValues(\.name)
+            remoteSpeakers: resegmented.resegmentation.timeline,
+            names: resegmented.resegmentation.speakers.mapValues(\.name)
         )
-        return Outcome(transcript: transcript, speakers: speakers)
+        return Outcome(
+            transcript: transcript,
+            speakers: resegmented.resegmentation.speakers,
+            utteranceVoiceprints: Self.utteranceVoiceprints(
+                for: transcript,
+                timeline: resegmented.resegmentation.timeline,
+                embeddings: resegmented.embeddings
+            )
+        )
     }
 
-    /// Resolve each diarized remote slot to a persistent identity, minting and
-    /// persisting a new ``Voiceprint`` for anyone unrecognized, and return the
-    /// slot → voiceprint map. The merge takes display names from it; the UI keeps
-    /// the voiceprints so a rename can write back to the matched row.
+    /// Attribute each remote utterance its *own* voice vector: the embedded turn of
+    /// the utterance's group that overlaps it most in time. This is the segment's
+    /// representative voiceprint — distinct from the group's exemplar — so a
+    /// mis-grouped segment can be reassigned to (and teach) the right person even
+    /// when its group resolved to someone else. Mic utterances and utterances no
+    /// embedded turn covers are simply absent.
+    private static func utteranceVoiceprints(
+        for transcript: Transcript,
+        timeline: SpeakerTimeline,
+        embeddings: [Int: [Float]]
+    ) -> [Int: Voiceprint] {
+        guard !embeddings.isEmpty else { return [:] }
+        var result: [Int: Voiceprint] = [:]
+        for utterance in transcript.utterances {
+            guard case let .remote(group) = utterance.speaker else { continue }
+            var best: (vector: [Float], overlap: Double)?
+            for (index, turn) in timeline.turns.enumerated() {
+                guard turn.speaker == group, let vector = embeddings[index] else { continue }
+                let seconds = Self.overlapSeconds(utterance.range, turn.range)
+                if seconds > (best?.overlap ?? 0) {
+                    best = (vector, seconds)
+                }
+            }
+            if let best {
+                result[utterance.id] = Voiceprint(embedding: best.vector)
+            }
+        }
+        return result
+    }
+
+    /// Seconds two timeline ranges overlap, `0` when they're disjoint.
+    private static func overlapSeconds(_ lhs: Range<Duration>, _ rhs: Range<Duration>) -> Double {
+        let lower = max(lhs.lowerBound, rhs.lowerBound)
+        let upper = min(lhs.upperBound, rhs.upperBound)
+        return upper > lower ? (upper - lower).seconds : 0
+    }
+
+    /// Re-segment the diarized timeline by **voice** and resolve each resulting
+    /// group to an identity — a recognized ``Person`` or a fresh un-named mint —
+    /// returning the re-keyed timeline and the group → resolution map. This is what
+    /// pulls apart a slot the diarizer fused across two voices (the Theo+MKBHD
+    /// failure): turns are embedded individually, clustered by voice, and only then
+    /// matched to people (docs/speaker-identity-resegmentation.md). The merge takes
+    /// its segmentation *and* display names from the result; the UI keeps the
+    /// resolutions so naming a group can bind its exemplar to a person. Mints are
+    /// **not** persisted here: an un-named speaker stays in memory until the user
+    /// names it, so the directory never fills with orphan `Speaker N` rows
+    /// (docs/speaker-identity-exemplars.md).
     ///
-    /// Identity comes from a `wespeaker_v2` vector re-extracted from each slot's
+    /// Identity comes from a `wespeaker_v2` vector re-extracted from each turn's
     /// system audio — not the diarizer's internal cluster embeddings, which live
     /// in an incomparable space — so a voiceprint stays portable to the live namer
-    /// (DESIGN.md §6). A slot with too little audio to embed is left unresolved.
+    /// (DESIGN.md §6). A turn with too little audio to embed is attached to a
+    /// neighbor's group by the re-segmenter.
     ///
-    /// A storage error degrades to generic labels rather than failing the pass:
-    /// the authoritative transcript is the durable output and must survive a
-    /// voiceprint-DB hiccup (the audio-is-durable tenet, applied to its derived
-    /// record). Skipped entirely when no store or embedder is wired.
-    private func resolveIdentities(
+    /// A storage error degrades to the diarizer's own segmentation with generic
+    /// labels rather than failing the pass: the authoritative transcript is the
+    /// durable output and must survive a voiceprint-DB hiccup (the audio-is-durable
+    /// tenet, applied to its derived record). When no store or embedder is wired,
+    /// the diarizer's timeline passes through unchanged.
+    private func resegment(
         _ timeline: SpeakerTimeline,
         system frames: [AudioFrame]
-    ) async -> [Int: Voiceprint] {
-        guard let store, let embedder else { return [:] }
-        let embeddings = await identityEmbeddings(timeline, system: frames, using: embedder)
-        guard !embeddings.isEmpty,
-              let speakers = try? Self.resolve(embeddings, in: store, with: resolver)
-        else { return [:] }
-        return speakers
+    ) async -> (resegmentation: SpeakerResegmenter.Resegmentation, embeddings: [Int: [Float]]) {
+        let passthrough = SpeakerResegmenter.Resegmentation(timeline: timeline, speakers: [:])
+        guard let store, let embedder else { return (passthrough, [:]) }
+        guard let directory = try? store.enrolledPersons() else { return (passthrough, [:]) }
+        let embeddings = await turnEmbeddings(timeline, system: frames, using: embedder)
+        let resegmentation = resegmenter.resegment(
+            turns: timeline.turns,
+            embeddings: embeddings,
+            against: directory
+        )
+        return (resegmentation, embeddings)
     }
 
-    /// Re-embed each remote slot's system audio into the shared identity space,
-    /// dropping slots too short to carry a stable voiceprint. Slots are walked in
-    /// order so the result is deterministic.
-    private func identityEmbeddings(
+    /// Embed each turn's system audio into the shared identity space, keyed by the
+    /// turn's index, dropping turns too short to carry a stable voiceprint. Turns
+    /// are walked in order so the result is deterministic.
+    private func turnEmbeddings(
         _ timeline: SpeakerTimeline,
         system frames: [AudioFrame],
         using embedder: any SpeakerEmbedder
     ) async -> [Int: [Float]] {
-        let slots = Set(timeline.turns.map(\.speaker)).sorted()
         var embeddings: [Int: [Float]] = [:]
-        for slot in slots {
-            let samples = SpeakerAudio.samples(forSlot: slot, in: timeline, from: frames)
+        for (index, turn) in timeline.turns.enumerated() {
+            let samples = SpeakerAudio.samples(for: turn, from: frames)
             guard samples.count >= Self.minIdentitySamples else { continue }
             if let vector = try? await embedder.embedding(for: samples) {
-                embeddings[slot] = vector
+                embeddings[index] = vector
             }
         }
         return embeddings
-    }
-
-    /// The throwing core of identity resolution, split out so the call site can
-    /// degrade a failure to generic labels in one place.
-    private static func resolve(
-        _ embeddings: [Int: [Float]],
-        in store: VoiceprintStore,
-        with resolver: SpeakerResolver
-    ) throws -> [Int: Voiceprint] {
-        let resolution = try resolver.resolve(embeddings, against: store.all())
-        for voiceprint in resolution.minted {
-            try store.save(voiceprint)
-        }
-        return resolution.bySlot
     }
 
     /// Decode one track's saved segments into an in-memory frame buffer.

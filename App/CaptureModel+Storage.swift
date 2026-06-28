@@ -10,15 +10,21 @@ extension CaptureModel {
     /// its container, but an unsigned dev build runs unsandboxed against the
     /// real directory, so we namespace explicitly.
     static func newSessionDirectory() -> URL {
+        let stamp = Int(Date().timeIntervalSince1970)
+        return recordingsRoot().appendingPathComponent("session-\(stamp)", isDirectory: true)
+    }
+
+    /// The `Recordings/` directory holding every session, under our
+    /// bundle-namespaced Application Support — where the history sidebar lists from
+    /// and new sessions are created beneath.
+    static func recordingsRoot() -> URL {
         let base = FileManager.default
             .urls(for: .applicationSupportDirectory, in: .userDomainMask).first
             ?? URL(fileURLWithPath: NSTemporaryDirectory())
         let namespace = Bundle.main.bundleIdentifier ?? "SayWhat"
-        let stamp = Int(Date().timeIntervalSince1970)
         return base
             .appendingPathComponent(namespace, isDirectory: true)
             .appendingPathComponent("Recordings", isDirectory: true)
-            .appendingPathComponent("session-\(stamp)", isDirectory: true)
     }
 
     /// Open the persistent voiceprint database under our bundle-namespaced
