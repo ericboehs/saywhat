@@ -10,6 +10,11 @@ enum AppSettings {
     static let fuzzinessKey = "speakerMatchFuzziness"
     static let defaultFuzziness = 0.5
 
+    /// Whether the transcript shows diagnostic overlays — per-segment diarizer
+    /// slot and voiceprint match score, the live namer's running matches, and a
+    /// voiceprint-directory inspector. Off by default; toggled from the Debug menu.
+    static let showDebugInfoKey = "showDebugInfo"
+
     /// The cosine-similarity threshold the current fuzziness maps to. Higher
     /// fuzziness loosens matching (a lower threshold), so one person's varied
     /// takes collapse onto a single voiceprint instead of splitting into several.

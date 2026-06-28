@@ -51,6 +51,13 @@ final class CaptureModel {
     /// shown on the live transcript so a known voice reads as "Eric" before the
     /// final pass confirms it. Empty until a voice is matched; reset each start.
     private(set) var liveNames: [Int: String] = [:]
+    /// Remote slot → the live namer's latest diagnostics (nearest enrolled voice +
+    /// score + accumulated audio), shown only when the Debug overlay is on so the
+    /// live identification can be watched as it resolves. Reset each start.
+    private(set) var liveDebug: [Int: LiveSpeakerNamer.SlotDiagnostics] = [:]
+    /// The enrolled voiceprint directory, loaded on demand for the debug inspector
+    /// (reveals e.g. duplicate "Zwag" people). Empty until ``loadVoiceprintDirectory()``.
+    var voiceprintDirectory: [EnrolledPerson] = []
     /// Non-nil while the final pass runs, narrating its current stage.
     var finalizeStatus: String?
     /// Plays the finished recording's mixed audio so the final transcript can be
@@ -141,6 +148,7 @@ final class CaptureModel {
         finalTranscript = nil
         speakers = [:]
         liveNames = [:]
+        liveDebug = [:]
         liveNamer = LiveSpeakerNamer(
             embedder: speakerEmbedder,
             store: voiceprintStore,
@@ -416,8 +424,11 @@ extension CaptureModel {
     func nameSpeakersLive() async {
         while isRecording {
             try? await Task.sleep(for: .seconds(2))
-            guard let names = await liveNamer?.resolve() else { continue }
+            guard let namer = liveNamer else { continue }
+            let names = await namer.resolve()
             if names != liveNames { liveNames = names }
+            let debug = await namer.debug()
+            if debug != liveDebug { liveDebug = debug }
         }
     }
 
