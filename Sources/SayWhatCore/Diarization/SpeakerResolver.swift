@@ -4,7 +4,7 @@ import Foundation
 /// a fresh, un-named mint awaiting a name. Either way it carries this slot's own
 /// embedding as a ``Voiceprint`` exemplar, so naming the slot can bind that take
 /// to a person (the rename path), and the display ``name`` the merge should show.
-public struct ResolvedSpeaker: Sendable, Equatable {
+public struct ResolvedSpeaker: Sendable, Equatable, Codable {
     /// The enrolled identity this slot matched, or `nil` for an un-named mint.
     public let person: Person?
 

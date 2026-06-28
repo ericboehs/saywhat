@@ -8,7 +8,7 @@ import Foundation
 /// highlight the word under the playhead — karaoke-style — rather than the whole
 /// turn. A transcriber that can't provide them simply leaves
 /// ``TranscriptSegment/words`` empty; nothing downstream requires them.
-public struct WordTiming: Sendable, Equatable {
+public struct WordTiming: Sendable, Equatable, Codable {
     /// The recognized word, as it should be shown.
     public let text: String
 
