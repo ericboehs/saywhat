@@ -17,7 +17,7 @@ struct SayWhatApp: App {
         .commands {
             CommandMenu("Debug") {
                 Toggle("Show Debug Info", isOn: $showDebugInfo)
-                    .keyboardShortcut("d", modifiers: [.command, .option])
+                    .keyboardShortcut("d", modifiers: [.command, .shift])
             }
         }
 
