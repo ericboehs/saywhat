@@ -102,6 +102,9 @@ private struct SessionRow: View {
 /// playback — or a placeholder before anything is selected.
 private struct DetailPane: View {
     @Bindable var model: CaptureModel
+    /// Mirrors the Debug menu's toggle; when on, the transcript shows per-segment
+    /// diagnostics and the voiceprint inspector appears beneath it.
+    @AppStorage(AppSettings.showDebugInfoKey) private var showDebug = false
 
     var body: some View {
         VStack(spacing: 16) {
@@ -122,6 +125,10 @@ private struct DetailPane: View {
 
             content
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
+
+            if showDebug {
+                VoiceprintInspector(model: model)
+            }
 
             if let sessionPath = model.sessionPath {
                 Text(sessionPath)
@@ -153,7 +160,8 @@ private struct DetailPane: View {
             LiveTranscriptView(
                 transcript: model.transcript,
                 active: true,
-                names: model.liveNames
+                names: model.liveNames,
+                debugLine: showDebug ? { model.liveDebugLine(for: $0) } : nil
             )
         } else if let finalTranscript = model.finalTranscript {
             transcript(finalTranscript)
@@ -173,7 +181,8 @@ private struct DetailPane: View {
                 cursor: model.playback.flatMap { transcript.wordCursor(at: $0.currentTime) },
                 onSeek: { model.playback?.seek(to: $0) },
                 onRename: { slot, name in model.renameSpeaker(slot: slot, to: name) },
-                onReassign: { id, name in model.reassignUtterance(id: id, to: name) }
+                onReassign: { id, name in model.reassignUtterance(id: id, to: name) },
+                debugLine: showDebug ? { model.debugLine(for: $0) } : nil
             )
             playbackBar
         }

@@ -122,6 +122,9 @@ struct SpeakerBlock: View {
     /// diarizer mis-grouped; `nil` hides the per-segment option (only whole-speaker
     /// rename is offered).
     var onReassign: ((String) -> Void)?
+    /// A diagnostic line (slot, resolved identity, match score) shown beneath the
+    /// name when the Debug overlay is on; `nil` hides it.
+    var debugLine: String?
 
     /// Whether the rename popover is open, its in-progress text, and whether the
     /// edit targets the whole speaker (default) or just this one segment.
@@ -141,6 +144,12 @@ struct SpeakerBlock: View {
                         .monospacedDigit()
                         .foregroundStyle(.tertiary)
                 }
+            }
+            if let debugLine {
+                Text(debugLine)
+                    .font(.system(.caption2, design: .monospaced))
+                    .foregroundStyle(.tertiary)
+                    .textSelection(.enabled)
             }
             content
                 .foregroundStyle(volatile ? .secondary : .primary)
@@ -275,6 +284,8 @@ struct LiveTranscriptView: View {
     /// Remote slot → the enrolled name the live namer recognized mid-meeting, so a
     /// known voice reads as "Eric" instead of "Speaker 2"; empty until matched.
     var names: [Int: String] = [:]
+    /// Per-block diagnostic line for the Debug overlay; `nil` (off) shows none.
+    var debugLine: ((SpeakerLabel) -> String?)?
 
     private let liveEdge = "live-edge"
 
@@ -290,7 +301,8 @@ struct LiveTranscriptView: View {
                             SpeakerBlock(
                                 label: block.label,
                                 text: block.text,
-                                name: name(for: block.label)
+                                name: name(for: block.label),
+                                debugLine: debugLine?(block.label)
                             )
                         }
                         ForEach(transcript.volatiles) { guess in
@@ -298,7 +310,8 @@ struct LiveTranscriptView: View {
                                 label: guess.label,
                                 text: guess.text,
                                 name: name(for: guess.label),
-                                volatile: true
+                                volatile: true,
+                                debugLine: debugLine?(guess.label)
                             )
                         }
                     }
@@ -335,6 +348,8 @@ struct FinalTranscriptView: View {
     /// Reassign a single utterance (by id) to a person, correcting one mis-grouped
     /// segment; `nil` disables the per-segment option.
     var onReassign: ((Int, String) -> Void)?
+    /// Per-utterance diagnostic line for the Debug overlay; `nil` (off) shows none.
+    var debugLine: ((Transcript.Utterance) -> String?)?
 
     var body: some View {
         ScrollViewReader { proxy in
@@ -355,7 +370,8 @@ struct FinalTranscriptView: View {
                                     .wordIndex : nil,
                                 onSeek: onSeek,
                                 onRename: renameHandler(for: utterance.speaker),
-                                onReassign: reassignHandler(for: utterance)
+                                onReassign: reassignHandler(for: utterance),
+                                debugLine: debugLine?(utterance)
                             )
                             .id(utterance.id)
                         }
