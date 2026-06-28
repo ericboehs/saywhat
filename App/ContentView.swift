@@ -13,6 +13,12 @@ struct ContentView: View {
             DetailPane(model: model)
         }
         .task { model.refreshSessions() }
+        // Expose the reprocess action to the Debug menu, which can't reach this
+        // window's model directly.
+        .focusedSceneValue(\.reprocess, ReprocessAction(
+            isAvailable: model.canReprocess,
+            run: { model.reprocessSelected() }
+        ))
     }
 }
 
