@@ -249,6 +249,9 @@ struct SpeakerBlock: View {
 struct LiveTranscriptView: View {
     var transcript: LiveTranscript
     var active: Bool
+    /// Remote slot → the enrolled name the live namer recognized mid-meeting, so a
+    /// known voice reads as "Eric" instead of "Speaker 2"; empty until matched.
+    var names: [Int: String] = [:]
 
     private let liveEdge = "live-edge"
 
@@ -261,10 +264,19 @@ struct LiveTranscriptView: View {
                             .foregroundStyle(.tertiary)
                     } else {
                         ForEach(transcript.blocks) { block in
-                            SpeakerBlock(label: block.label, text: block.text)
+                            SpeakerBlock(
+                                label: block.label,
+                                text: block.text,
+                                name: name(for: block.label)
+                            )
                         }
                         ForEach(transcript.volatiles) { guess in
-                            SpeakerBlock(label: guess.label, text: guess.text, volatile: true)
+                            SpeakerBlock(
+                                label: guess.label,
+                                text: guess.text,
+                                name: name(for: guess.label),
+                                volatile: true
+                            )
                         }
                     }
                     Color.clear.frame(height: 1).id(liveEdge)
@@ -275,6 +287,13 @@ struct LiveTranscriptView: View {
                 withAnimation { proxy.scrollTo(liveEdge, anchor: .bottom) }
             }
         }
+    }
+
+    /// The live-recognized name for a label's remote slot, when the namer has
+    /// matched one; `nil` for *you* (the mic track) or an as-yet-unmatched slot,
+    /// which fall back to the generic "Speaker N".
+    private func name(for label: SpeakerLabel) -> String? {
+        label.remoteSlot.flatMap { names[$0] }
     }
 }
 

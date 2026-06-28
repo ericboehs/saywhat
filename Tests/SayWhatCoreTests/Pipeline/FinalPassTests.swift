@@ -49,6 +49,21 @@ private struct HangingTranscriber: Transcriber {
     }
 }
 
+/// A model-free ``SpeakerEmbedder`` that hands back scripted identity vectors in
+/// call order — stands in for the WeSpeaker model. `FinalPass` embeds slots in
+/// sorted order, so the first vector lands on the lowest slot.
+private final class ScriptedEmbedder: SpeakerEmbedder, @unchecked Sendable {
+    private let vectors: Mutex<[[Float]]>
+
+    init(_ vectors: [[Float]]) {
+        self.vectors = Mutex(vectors)
+    }
+
+    func embedding(for _: [Float]) async throws -> [Float]? {
+        vectors.withLock { $0.isEmpty ? nil : $0.removeFirst() }
+    }
+}
+
 /// A model-free ``Diarizer`` that drains its input and emits one canned timeline.
 private struct FakeDiarizer: Diarizer {
     let timeline: SpeakerTimeline
@@ -212,18 +227,18 @@ struct FinalPassTests {
         let store = try VoiceprintStore()
         try store.save(Voiceprint(name: "Eric", embedding: [1, 0]))
 
-        // Slot 0 ≈ enrolled Eric; slot 1 matches nobody and should be minted.
-        let timeline = SpeakerTimeline(
-            turns: [
-                SpeakerTurn(speaker: 0, range: .seconds(0) ..< .seconds(1)),
-                SpeakerTurn(speaker: 1, range: .seconds(1) ..< .seconds(2)),
-            ],
-            embeddings: [0: [0.99, 0.01], 1: [0, 1]]
-        )
+        // Slot 0's audio (0..1s) ≈ enrolled Eric; slot 1's (1..2s) matches nobody
+        // and should be minted. Identity comes from the embedder over each slot's
+        // audio — the embedder scripts slot 0 then slot 1 in sorted order.
+        let timeline = SpeakerTimeline(turns: [
+            SpeakerTurn(speaker: 0, range: .seconds(0) ..< .seconds(1)),
+            SpeakerTurn(speaker: 1, range: .seconds(1) ..< .seconds(2)),
+        ])
         let systemScript = [script(.system, "hello", 0, 1), script(.system, "hi", 1, 2)]
         let pass = FinalPass(
             diarizer: FakeDiarizer(timeline: timeline),
             store: store,
+            embedder: ScriptedEmbedder([[0.99, 0.01], [0, 1]]),
             makeTranscriber: { source in
                 FakeTranscriber(source: source, script: source == .system ? systemScript : [])
             }
@@ -240,8 +255,8 @@ struct FinalPassTests {
         #expect(outcome.speakers[1]?.name == "Speaker 1")
     }
 
-    @Test("a diarizer that surfaces no embeddings leaves identities unresolved")
-    func noEmbeddingsNoNames() async throws {
+    @Test("without an embedder, identities are left unresolved")
+    func noEmbedderNoNames() async throws {
         let session = makeSession()
         try session.createDirectory()
         try await writeTrack(.system, in: session, seconds: 1)
@@ -253,9 +268,45 @@ struct FinalPassTests {
         let timeline = SpeakerTimeline(turns: [
             SpeakerTurn(speaker: 0, range: .seconds(0) ..< .seconds(1)),
         ])
+        // No embedder wired: the pass can't place the voice in the identity
+        // space, so it falls back to a generic label rather than guessing.
         let pass = FinalPass(
             diarizer: FakeDiarizer(timeline: timeline),
             store: store,
+            makeTranscriber: { source in
+                FakeTranscriber(
+                    source: source,
+                    script: source == .system ? [script(.system, "hi", 0, 1)] : []
+                )
+            }
+        )
+
+        let transcript = try await pass.run(session).transcript
+
+        #expect(transcript.utterances.first?.speakerName == nil)
+    }
+
+    @Test("a slot with too little audio to embed is left unresolved")
+    func shortSlotUnresolved() async throws {
+        let session = makeSession()
+        try session.createDirectory()
+        try await writeTrack(.system, in: session, seconds: 1)
+        defer { try? FileManager.default.removeItem(at: session.directory) }
+
+        let store = try VoiceprintStore()
+        try store.save(Voiceprint(name: "Eric", embedding: [1, 0]))
+
+        // The slot's only turn (5..6s) falls past the one second of recorded
+        // audio, so no frames slice into it and the embedder is never consulted —
+        // the slot stays generic even though its scripted vector would have
+        // matched Eric.
+        let timeline = SpeakerTimeline(turns: [
+            SpeakerTurn(speaker: 0, range: .seconds(5) ..< .seconds(6)),
+        ])
+        let pass = FinalPass(
+            diarizer: FakeDiarizer(timeline: timeline),
+            store: store,
+            embedder: ScriptedEmbedder([[1, 0]]),
             makeTranscriber: { source in
                 FakeTranscriber(
                     source: source,
