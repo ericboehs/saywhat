@@ -1,0 +1,209 @@
+import Foundation
+
+/// Re-segments a diarized timeline by **identity** instead of trusting the
+/// diarizer's own speaker slots. On real meetings Sortformer can fuse two voices
+/// into one slot (Theo and MKBHD both landed in "Speaker 1" — see
+/// docs/speaker-identity-resegmentation.md); since everything downstream is
+/// slot-granular, that one slot then gets a single blended voiceprint and a
+/// single rename, so neither identity nor the user can pull the two apart.
+///
+/// The fix re-clusters the *turns* by their own `wespeaker_v2` embeddings — the
+/// same space ``VoiceprintMatcher`` already trusts — and lets those clusters, not
+/// the diarizer's slots, define who's who. Theo's turns cluster together and
+/// MKBHD's cluster together even though Sortformer called them all slot 1.
+///
+/// Pure and model-free: the embedding per turn is supplied by the caller (the
+/// final pass runs the model), so the clustering, group→identity resolution, and
+/// short-turn assignment are all unit-testable without CoreML. The diarizer's turn
+/// *boundaries* are kept; only its speaker *labels* are overridden.
+public struct SpeakerResegmenter: Sendable {
+    /// The group→identity policy; its matcher's threshold also governs clustering,
+    /// so one fuzziness setting decides both "same voice for clustering" and "same
+    /// voice for enrollment" (docs/speaker-identity-resegmentation.md, D2).
+    public var resolver: SpeakerResolver
+
+    public init(resolver: SpeakerResolver = SpeakerResolver()) {
+        self.resolver = resolver
+    }
+
+    /// A re-segmented timeline whose turns are keyed by identity **group** instead
+    /// of diarizer slot, plus how each group resolved (matched person or mint).
+    public struct Resegmentation: Sendable, Equatable {
+        /// The original turns, re-labeled so `speaker` is the identity group id.
+        public let timeline: SpeakerTimeline
+        /// Group id → how that voice resolved. Empty when nothing was embeddable.
+        public let speakers: [Int: ResolvedSpeaker]
+
+        public init(timeline: SpeakerTimeline, speakers: [Int: ResolvedSpeaker]) {
+            self.timeline = timeline
+            self.speakers = speakers
+        }
+    }
+
+    /// Re-segment `turns` by voice.
+    ///
+    /// - Parameters:
+    ///   - turns: the diarizer's turns (boundaries are kept; labels are replaced).
+    ///   - embeddings: identity vector per **turn index** (into `turns`). A turn
+    ///     too short/silent to embed is simply absent — it is attached to a
+    ///     neighbor's group in step 3.
+    ///   - directory: the enrolled persons to resolve groups against.
+    ///   - mintName: name for a group matching nobody (default `Speaker N`).
+    /// - Returns: turns re-keyed by identity group, and each group's resolution.
+    ///   When no turn was embeddable, the diarizer's own segmentation passes
+    ///   through unchanged and `speakers` is empty (the caller falls back to
+    ///   generic labels).
+    public func resegment(
+        turns: [SpeakerTurn],
+        embeddings: [Int: [Float]],
+        against directory: [EnrolledPerson],
+        mintName: (Int) -> String = { "Speaker \($0)" }
+    ) -> Resegmentation {
+        let embedded = embeddings.keys.sorted()
+        guard !embedded.isEmpty else {
+            return Resegmentation(timeline: SpeakerTimeline(turns: turns), speakers: [:])
+        }
+
+        // 1. Cluster the embeddable turns into voice groups, then 2. order the
+        //    groups by their earliest turn so group ids (and thus "Speaker N"
+        //    numbering) follow the transcript's reading order.
+        let groups = cluster(embedded, embeddings)
+            .sorted { orderKey($0, turns) < orderKey($1, turns) }
+
+        var groupOfTurn: [Int: Int] = [:]
+        for (id, group) in groups.enumerated() {
+            for turnIndex in group {
+                groupOfTurn[turnIndex] = id
+            }
+        }
+
+        // 3. Attach each short/unembeddable turn to the group of the embedded turn
+        //    nearest it in time. We deliberately ignore the diarizer's own slot
+        //    here: its slot assignment is the very thing this pass distrusts (it
+        //    fuses voices), so temporal adjacency is the more reliable prior
+        //    (docs/speaker-identity-resegmentation.md, D3).
+        for index in turns.indices where groupOfTurn[index] == nil {
+            if let neighbor = nearest(to: turns[index].range, among: embedded, in: turns) {
+                groupOfTurn[index] = groupOfTurn[neighbor]
+            }
+        }
+
+        // 4. Resolve each group to an identity via its medoid — a real take central
+        //    to the group, never an average (averaging would dilute the voiceprint).
+        var observations: [Int: [Float]] = [:]
+        for (id, group) in groups.enumerated() {
+            observations[id] = medoid(group, embeddings)
+        }
+        let resolution = resolver.resolve(observations, against: directory, mintName: mintName)
+
+        // 5. Re-key every turn to its group id (boundaries unchanged).
+        let rekeyed = turns.indices.map { index in
+            SpeakerTurn(
+                speaker: groupOfTurn[index] ?? turns[index].speaker,
+                range: turns[index].range
+            )
+        }
+        return Resegmentation(
+            timeline: SpeakerTimeline(turns: rekeyed),
+            speakers: resolution.bySlot
+        )
+    }
+
+    // MARK: clustering
+
+    /// Agglomerative average-linkage clustering of the embedded turns: repeatedly
+    /// merge the two most-similar groups while their average cross-pair cosine
+    /// clears the matcher threshold. Deterministic — the lowest-index best pair is
+    /// merged first, so the result never depends on dictionary order.
+    private func cluster(_ indices: [Int], _ embeddings: [Int: [Float]]) -> [[Int]] {
+        var groups = indices.map { [$0] }
+        let threshold = resolver.matcher.threshold
+        while groups.count > 1 {
+            var bestSimilarity = -Float.greatestFiniteMagnitude
+            var bestPair: (left: Int, right: Int)?
+            for left in groups.indices {
+                for right in (left + 1) ..< groups.count {
+                    let similarity = averageLinkage(groups[left], groups[right], embeddings)
+                    if similarity > bestSimilarity {
+                        bestSimilarity = similarity
+                        bestPair = (left, right)
+                    }
+                }
+            }
+            guard let pair = bestPair, bestSimilarity >= threshold else { break }
+            groups[pair.left].append(contentsOf: groups[pair.right])
+            groups.remove(at: pair.right)
+        }
+        return groups
+    }
+
+    /// Mean cosine similarity over every cross-group pair of turn embeddings.
+    private func averageLinkage(_ lhs: [Int], _ rhs: [Int], _ embeddings: [Int: [Float]]) -> Float {
+        var total: Float = 0
+        var count = 0
+        for x in lhs {
+            for y in rhs {
+                total += VoiceprintMatcher.cosineSimilarity(
+                    embeddings[x] ?? [],
+                    embeddings[y] ?? []
+                )
+                count += 1
+            }
+        }
+        return count == 0 ? 0 : total / Float(count)
+    }
+
+    /// The group's medoid embedding — the member most similar to the rest (itself
+    /// for a singleton). A representative real take, so resolution and the rename
+    /// path bind to genuine audio rather than a synthetic centroid.
+    private func medoid(_ group: [Int], _ embeddings: [Int: [Float]]) -> [Float] {
+        guard group.count > 1 else { return embeddings[group.first ?? -1] ?? [] }
+        var best = group[0]
+        var bestScore = -Float.greatestFiniteMagnitude
+        for candidate in group {
+            var score: Float = 0
+            for other in group where other != candidate {
+                score += VoiceprintMatcher.cosineSimilarity(
+                    embeddings[candidate] ?? [],
+                    embeddings[other] ?? []
+                )
+            }
+            if score > bestScore {
+                bestScore = score
+                best = candidate
+            }
+        }
+        return embeddings[best] ?? []
+    }
+
+    // MARK: short-turn assignment
+
+    /// The candidate turn with the smallest time gap to `target` (ties by index).
+    private func nearest(
+        to target: Range<Duration>,
+        among candidates: [Int],
+        in turns: [SpeakerTurn]
+    ) -> Int? {
+        candidates.min { lhs, rhs in
+            let gapLhs = gap(target, turns[lhs].range)
+            let gapRhs = gap(target, turns[rhs].range)
+            if gapLhs != gapRhs { return gapLhs < gapRhs }
+            return lhs < rhs
+        }
+    }
+
+    /// Seconds between two ranges (0 if they overlap or touch).
+    private func gap(_ lhs: Range<Duration>, _ rhs: Range<Duration>) -> Double {
+        if lhs.overlap(with: rhs) > 0 { return 0 }
+        if lhs.upperBound <= rhs.lowerBound { return (rhs.lowerBound - lhs.upperBound).seconds }
+        return (lhs.lowerBound - rhs.upperBound).seconds
+    }
+
+    // MARK: ordering
+
+    /// Sort key for a group: its earliest turn start, then its lowest turn index —
+    /// so groups are numbered in the order their voices first appear.
+    private func orderKey(_ group: [Int], _ turns: [SpeakerTurn]) -> Duration {
+        group.map { turns[$0].range.lowerBound }.min() ?? .zero
+    }
+}
