@@ -89,25 +89,45 @@ struct SpeakerResegmenterTests {
         #expect(result.speakers[1]?.name == "Speaker 1")
     }
 
-    @Test("two distinct voice groups can't both claim one enrolled person")
-    func mutualExclusionAtGroupLevel() {
-        // Both groups lean toward Eric, but only the stronger keeps him; the other
-        // mints — the greedy mutual exclusion is enforced at the group level.
+    @Test("an enrolled voice stays one group even when its turns are noisy")
+    func enrolledVoiceStaysOneGroup() {
+        // The Zwag-fragmentation fix: both turns clearly match Eric (0.7 and 0.6
+        // cosine against his exemplar), but they sit ~100° apart from *each other*
+        // (cosine ≈ −0.15), below the clustering threshold. Pure turn-to-turn
+        // clustering would split them into two groups; anchoring on the enrolled
+        // exemplar keeps them one — they are both Eric.
         let eric = enrolled("Eric", [1, 0])
         let turns = [turn(0, 0, 2), turn(1, 2, 4)]
-        // Both clear Eric's threshold (0.7 and 0.6 cosine), but they sit ~100°
-        // apart from *each other* (cosine ≈ −0.15), so they stay two groups.
         let result = SpeakerResegmenter().resegment(
             turns: turns,
             embeddings: [0: [0.7, -0.714], 1: [0.6, 0.8]],
             against: [eric]
         )
 
-        // Distinct enough to be two groups; only one is Eric.
-        #expect(Set(groups(result)).count == 2)
-        let names = Set(result.speakers.values.map(\.name))
-        #expect(names.contains("Eric"))
-        #expect(names.contains("Speaker 1"))
+        #expect(groups(result) == [0, 0])
+        #expect(result.speakers.count == 1)
+        #expect(result.speakers[0]?.person == eric.person)
+        #expect(result.speakers[0]?.name == "Eric")
+    }
+
+    @Test("unknown turns still cluster among themselves, separate from a known voice")
+    func unknownTurnsClusterApartFromKnown() {
+        // One turn matches enrolled Eric; two unmatched turns are similar to each
+        // other but not to Eric, so they cluster into a single minted speaker — the
+        // known voice and the unknown voice stay distinct.
+        let eric = enrolled("Eric", [1, 0])
+        let turns = [turn(0, 0, 2), turn(0, 2, 4), turn(1, 4, 6)]
+        let result = SpeakerResegmenter().resegment(
+            turns: turns,
+            embeddings: [0: [1, 0], 1: [0, 1], 2: [0.02, 0.99]],
+            against: [eric]
+        )
+
+        // Turn 0 → Eric (group 0); turns 1 & 2 cluster → one mint (group 1).
+        #expect(groups(result) == [0, 1, 1])
+        #expect(result.speakers[0]?.name == "Eric")
+        #expect(result.speakers[1]?.person == nil)
+        #expect(result.speakers[1]?.name == "Speaker 1")
     }
 
     @Test("an unmatched group carries an un-owned exemplar — nothing to persist")

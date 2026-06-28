@@ -64,10 +64,34 @@ public struct SpeakerResegmenter: Sendable {
             return Resegmentation(timeline: SpeakerTimeline(turns: turns), speakers: [:])
         }
 
-        // 1. Cluster the embeddable turns into voice groups, then 2. order the
-        //    groups by their earliest turn so group ids (and thus "Speaker N"
-        //    numbering) follow the transcript's reading order.
-        let groups = cluster(embedded, embeddings)
+        // 1. Group the embeddable turns by voice. Each turn that matches an
+        //    enrolled person is anchored to that person's group; turns matching
+        //    nobody are clustered among themselves to discover unknown speakers.
+        //
+        //    Anchoring on the enrolled exemplars — not turn-to-turn similarity — is
+        //    what keeps one known voice together. A short turn's own embedding is
+        //    noisy: two genuine Zwag turns can each clear the threshold against
+        //    Zwag's clean exemplars yet sit below it *relative to each other*, so
+        //    pure agglomerative clustering shattered Zwag across many "Speaker N"
+        //    groups (docs/speaker-identity-resegmentation.md, D5). Identity is the
+        //    stable anchor; mutual similarity only has to separate the unknowns.
+        let matcher = resolver.matcher
+        var byPerson: [UUID: [Int]] = [:]
+        var personOrder: [UUID] = []
+        var unknown: [Int] = []
+        for turn in embedded {
+            if let person = matcher.match(embeddings[turn] ?? [], in: directory) {
+                if byPerson[person.id] == nil { personOrder.append(person.id) }
+                byPerson[person.id, default: []].append(turn)
+            } else {
+                unknown.append(turn)
+            }
+        }
+        let knownGroups = personOrder.map { byPerson[$0] ?? [] }
+
+        // 2. Order all groups by their earliest turn so group ids (and thus
+        //    "Speaker N" numbering) follow the transcript's reading order.
+        let groups = (knownGroups + cluster(unknown, embeddings))
             .sorted { orderKey($0, turns) < orderKey($1, turns) }
 
         var groupOfTurn: [Int: Int] = [:]

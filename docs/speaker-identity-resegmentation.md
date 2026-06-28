@@ -110,11 +110,19 @@ keyed the same way.
    (`SpeakerAudio.samples(forSlot:)` constrained to that single turn's range) and
    embed. A turn shorter than the embed floor (`minIdentitySamples`, 1 s) yields no
    vector — handled in step 4.
-2. **Cluster** the embeddable turns by cosine similarity (`VoiceprintMatcher.cosineSimilarity`)
-   into voice groups: agglomerative, merge two groups when their similarity ≥
-   `τ_split`. Each resulting group is one person within this meeting. (Theo's turns
-   cluster together; MKBHD's cluster together; even though Sortformer called them
-   all slot 1.)
+2. **Group the embeddable turns by voice — identity first** (D5). A turn that
+   matches an enrolled person (best exemplar ≥ threshold) is anchored to *that
+   person's* group; only turns matching nobody are clustered among themselves
+   (agglomerative, merge when similarity ≥ `τ_split`) to discover unknown speakers.
+   Anchoring on the stable enrolled exemplars — not turn-to-turn similarity — is
+   what keeps one known voice together: a short turn's own embedding is noisy, so
+   two genuine Zwag turns can each clear the threshold against Zwag's clean
+   exemplars yet fall below it *relative to each other*. Pure turn-to-turn
+   clustering therefore shattered Zwag across many "Speaker N" groups (the
+   "monstrosity" on session-1782614511). Identity is the anchor; mutual similarity
+   only has to separate the unknowns. (Theo's turns and MKBHD's still separate even
+   inside one fused Sortformer slot — Theo matches enrolled Theo, MKBHD matches
+   nobody and clusters on its own.)
 3. **Resolve** each group to identity: average is *not* used — score the group's
    turns against enrolled persons by best exemplar, with the existing greedy,
    mutually-exclusive `SpeakerResolver` policy, so two groups can't both claim
@@ -171,6 +179,18 @@ clustering, produced the "Theo: what / want / get" fragments scattered through
 MKBHD's and Zwag's sections. Fix: fall back to `nearestSpeaker(to:)` (the turn
 closest in time) instead of slot 0, so a gap word joins whoever was actually
 speaking around it.
+- **D5 — grouping anchor: identity-first vs pure clustering.** *Resolved by
+  session-1782614511.* Pure agglomerative turn-to-turn clustering shattered an
+  enrolled voice (Zwag) into many groups because short turns embed too noisily to
+  clear the threshold *against each other*, even when each clears it against the
+  clean enrolled exemplars. Anchor on identity instead: a turn matching an enrolled
+  person joins that person's group directly; only unknown turns cluster among
+  themselves. This keeps a known voice whole and makes the result robust to the
+  diarizer's run-to-run variance (the same recording grouped differently between
+  two passes). Trade-off: a turn that *falsely* matches an enrolled person joins
+  the wrong group — but the threshold guards that, and a false same-person match is
+  far rarer than noisy self-similarity.
+
 - **D4 — keep or drop pyannote in the final pass.** Drop it and let
   `SpeakerResegmenter` own clustering (simpler, recommended *after* the new path is
   proven) vs keep `HybridDiarizer` and run re-segmentation on top (safer, more
