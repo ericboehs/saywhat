@@ -96,6 +96,28 @@ struct TranscriptMergerInterjectionTests {
         #expect(result.utterances.map(\.text) == ["a b", "oh", "c", "okay", "d"])
     }
 
+    @Test("a system word in a diarization gap joins the nearest turn, not slot 0")
+    func gapWordJoinsNearestSpeaker() {
+        // The real-recording bug: a one-word fragment ("want") falls in a brief gap
+        // between two of speaker 1's turns. With identity re-segmentation slot 0 is
+        // a *named* person (here speaker 0 spoke earlier and is far away), so the old
+        // `?? 0` fallback stamped the gap word as speaker 0. It must instead join the
+        // temporally nearest turn — speaker 1.
+        let timeline = SpeakerTimeline(turns: [
+            SpeakerTurn(speaker: 0, range: .seconds(0) ..< .seconds(5)),
+            SpeakerTurn(speaker: 1, range: .seconds(10) ..< .seconds(12)),
+            SpeakerTurn(speaker: 1, range: .seconds(13) ..< .seconds(15)),
+        ])
+        let remote = worded(.system, [word("want", 12.4, 12.6)])
+        let result = TranscriptMerger().merge(
+            mic: [],
+            system: [remote],
+            remoteSpeakers: timeline
+        )
+
+        #expect(result.utterances.map(\.speaker) == [.remote(1)])
+    }
+
     @Test("a long mic reaction over a remote turn stays whole, never shredded")
     func longOverlappingReactionStaysWhole() {
         // The user talks *over* the remote for a few seconds — both turns genuinely

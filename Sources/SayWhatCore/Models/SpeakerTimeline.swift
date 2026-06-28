@@ -43,6 +43,21 @@ public struct SpeakerTimeline: Sendable, Equatable {
         }
         return coverage.max { $0.value < $1.value }?.key
     }
+
+    /// The speaker of the turn nearest `range` in time, or `nil` only if the
+    /// timeline is empty. The right fallback when ``dominantSpeaker(in:)`` finds no
+    /// overlap — a word that lands in a *gap* between turns (a brief pause the
+    /// diarizer didn't cover) belongs to whoever was speaking around it, not to an
+    /// arbitrary fixed slot. With identity re-segmentation, slot 0 is a *named*
+    /// person, so a fixed-slot fallback would stamp every gap word with that name.
+    public func nearestSpeaker(to range: Range<Duration>) -> Int? {
+        turns.min { lhs, rhs in
+            let gapLhs = range.gap(to: lhs.range)
+            let gapRhs = range.gap(to: rhs.range)
+            if gapLhs != gapRhs { return gapLhs < gapRhs }
+            return lhs.range.lowerBound < rhs.range.lowerBound
+        }?.speaker
+    }
 }
 
 extension Range where Bound == Duration {
@@ -52,6 +67,14 @@ extension Range where Bound == Duration {
         let upper = Swift.min(upperBound, other.upperBound)
         guard upper > lower else { return 0 }
         return (upper - lower).seconds
+    }
+
+    /// Seconds of empty space between this range and `other` (0 if they touch or
+    /// overlap) — the temporal distance used to find the nearest turn.
+    func gap(to other: Range<Duration>) -> Double {
+        if upperBound <= other.lowerBound { return (other.lowerBound - upperBound).seconds }
+        if other.upperBound <= lowerBound { return (lowerBound - other.upperBound).seconds }
+        return 0
     }
 }
 

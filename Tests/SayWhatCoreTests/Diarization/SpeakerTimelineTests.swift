@@ -37,4 +37,31 @@ struct SpeakerTimelineTests {
     func empty() {
         #expect(SpeakerTimeline().dominantSpeaker(in: .seconds(0) ..< .seconds(1)) == nil)
     }
+
+    @Test("the nearest speaker is the turn with the smallest time gap")
+    func nearest() {
+        let timeline = SpeakerTimeline(turns: [
+            SpeakerTurn(speaker: 0, range: .seconds(0) ..< .seconds(2)),
+            SpeakerTurn(speaker: 1, range: .seconds(10) ..< .seconds(12)),
+        ])
+        // A word at 9...9.3 sits in the gap; turn 1 (gap 0.7s) beats turn 0 (gap 7s).
+        #expect(timeline.nearestSpeaker(to: .seconds(9) ..< .seconds(9.3)) == 1)
+        // Right after turn 0 ends, turn 0 is nearer.
+        #expect(timeline.nearestSpeaker(to: .seconds(3) ..< .seconds(3.2)) == 0)
+    }
+
+    @Test("nearest speaker prefers the earlier turn on a tie")
+    func nearestTieByStart() {
+        let timeline = SpeakerTimeline(turns: [
+            SpeakerTurn(speaker: 7, range: .seconds(0) ..< .seconds(2)),
+            SpeakerTurn(speaker: 3, range: .seconds(6) ..< .seconds(8)),
+        ])
+        // A word at 3...5 is 1s from both turns; the earlier-starting turn wins.
+        #expect(timeline.nearestSpeaker(to: .seconds(3) ..< .seconds(5)) == 7)
+    }
+
+    @Test("an empty timeline has no nearest speaker")
+    func nearestEmpty() {
+        #expect(SpeakerTimeline().nearestSpeaker(to: .seconds(0) ..< .seconds(1)) == nil)
+    }
 }
