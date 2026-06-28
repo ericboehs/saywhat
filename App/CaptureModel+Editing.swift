@@ -18,7 +18,7 @@ extension CaptureModel {
         guard !trimmed.isEmpty, let resolved = speakers[slot] else { return }
         guard let person = bindVoice(resolved.exemplar, to: trimmed) else { return }
         speakers[slot] = ResolvedSpeaker(person: person, exemplar: resolved.exemplar, name: trimmed)
-        finalTranscript = finalTranscript?.renamingSpeaker(slot, to: trimmed)
+        finalTranscript = finalTranscript?.renamingSpeaker(slot, to: trimmed).coalesced()
         persist()
     }
 
@@ -36,7 +36,7 @@ extension CaptureModel {
         if let voiceprint = utteranceVoiceprints[id], bindVoice(voiceprint, to: trimmed) == nil {
             return
         }
-        finalTranscript = finalTranscript?.reassigningUtterance(id, to: trimmed)
+        finalTranscript = finalTranscript?.reassigningUtterance(id, to: trimmed).coalesced()
         persist()
     }
 
@@ -126,7 +126,9 @@ extension CaptureModel {
         let store = TranscriptStore(directory: session.directory)
         transcriptStore = store
         let document = try? store.load()
-        finalTranscript = document?.transcript
+        // Normalize on load too, so a transcript saved before coalescing (or hand-
+        // edited elsewhere) still honors the one-block-per-adjacent-speaker invariant.
+        finalTranscript = document?.transcript.coalesced()
         speakers = document?.speakers ?? [:]
         utteranceVoiceprints = document?.utteranceVoiceprints ?? [:]
 
