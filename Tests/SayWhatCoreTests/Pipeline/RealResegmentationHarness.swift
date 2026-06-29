@@ -40,10 +40,7 @@ struct RealResegmentationHarness {
         }
 
         let pass = FinalPass(
-            diarizer: HybridDiarizer(
-                turns: SortformerLiveDiarizer(),
-                embeddings: OfflinePyannoteDiarizer()
-            ),
+            diarizer: SortformerLiveDiarizer(),
             store: store,
             embedder: WeSpeakerEmbedder(),
             makeTranscriber: { ParakeetTranscriber(source: $0) }
@@ -89,10 +86,7 @@ struct RealResegmentationHarness {
             frames.append(frame)
         }
 
-        let diarizer = HybridDiarizer(
-            turns: SortformerLiveDiarizer(),
-            embeddings: OfflinePyannoteDiarizer()
-        )
+        let diarizer = SortformerLiveDiarizer()
         var timeline = SpeakerTimeline()
         for await snapshot in try await diarizer.diarize(Self.stream(frames)) {
             timeline = snapshot

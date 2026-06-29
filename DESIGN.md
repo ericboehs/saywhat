@@ -68,7 +68,7 @@ code and this doc as a bug in one of them.
 | Packaging | **Swift Package Manager** | SPM-first; project generated (Tuist/XcodeGen) to avoid `.xcodeproj` merge conflicts. See QUALITY.md. |
 | Live ASR | **Apple `SpeechTranscriber`** | Streaming, volatile→final, zero binary bloat, ~70× realtime. |
 | Batch ASR | **FluidAudio Parakeet TDT v3** | ~11–12% WER, 200×+ realtime, for the authoritative final pass. |
-| Diarization | **FluidAudio** (Sortformer live + offline pyannote final) | Apple does no diarization; FluidAudio is mandatory. |
+| Diarization | **FluidAudio** Sortformer (live + final), `wespeaker_v2` voiceprints | Apple does no diarization; FluidAudio is mandatory. |
 | Speaker ID | **FluidAudio `SpeakerManager`** + local voiceprint DB | Persistent cross-session identity. |
 | VAD | **FluidAudio Silero VAD** | Endpointing / silence gating. |
 | Summary (default) | **Apple Foundation Models** | Zero download, on-device, 4096-token context → map-reduce. |
@@ -97,7 +97,7 @@ would only fight us on real-time audio capture and on shipping a clean binary.
         └─ both tracks streamed to disk as AAC continuously (crash recovery) ─┐
                                                                               ▼
                     ┌─────────── FINAL (on meeting end, authoritative) ───────────┐
-                    │ Parakeet TDT v3 (batch ASR) + pyannote (offline diarization) │
+                    │ Parakeet TDT v3 (batch ASR) + Sortformer (batch diarization) │
                     │      └─► SpeakerManager: match embeddings → "Eric","Ashley"  │
                     │                              ▼                               │
                     │                     Summarizer (protocol)                    │
@@ -232,8 +232,11 @@ choice.
 - **Live labels:** Sortformer (streaming, ~480 ms updates, up to 4 speakers).
   Runs concurrently with ASR and tags each utterance with a speaker id. Good
   enough for live "who's talking" coloring.
-- **Final boundaries:** offline pyannote pipeline (best DER, ~10%, no speaker
-  cap) on the saved audio during the final pass.
+- **Final boundaries:** Sortformer re-run as a single batch over the saved audio
+  during the final pass. On real meeting audio it splits the remote speakers
+  cleanly where the offline pyannote pass glued them together, so the final path
+  drops pyannote entirely; persistent identity comes from `wespeaker_v2`
+  voiceprints re-extracted per turn, not from any diarizer-internal embedding.
 - **Merge:** speaker segments are aligned to transcript tokens by timestamp
   (`audioTimeRange`). The mic/system split makes this dramatically easier (mic =
   always one known speaker).
@@ -248,10 +251,13 @@ choice.
 - The mic track auto-enrolls **you** (it's always you), so the owner is named
   from day one.
 
-**Streaming-diarization caps:** Sortformer handles ≤4 live speakers; large
-meetings fall back to "more than 4, resolve in final pass" using offline
-pyannote (no cap). The live view degrades gracefully (generic labels) and the
-final transcript gets it right.
+**Streaming-diarization caps:** Sortformer handles ≤4 speakers per window, live
+and in the final pass. Beyond that, identity re-segmentation recovers more
+people than there are slots — the final pass re-embeds each turn with
+`wespeaker_v2` and clusters by voice, so a slot Sortformer fused across two
+speakers is pulled back apart and matched to distinct voiceprints. The live view
+degrades gracefully (generic labels) and the final transcript gets identity
+right even past four voices.
 
 ---
 
@@ -260,8 +266,8 @@ final transcript gets it right.
 1. **Live pass** (during meeting): SpeechTranscriber + Sortformer. Latency-
    optimized. Drives the readable transcript. Saved as provisional.
 2. **Final pass** (meeting end / on demand): Parakeet TDT v3 batch ASR +
-   offline pyannote diarization + persistent-ID resolution, run over the
-   continuously-saved AAC. Produces the canonical transcript that feeds
+   Sortformer batch diarization + `wespeaker_v2` persistent-ID resolution, run
+   over the continuously-saved AAC. Produces the canonical transcript that feeds
    summarization.
 
 Optional third ASR engine (WhisperKit large-v3-turbo) selectable for
@@ -465,8 +471,8 @@ workflow and ownership:
   volatile→final. The thing you want to *read*.
 - **Phase 2 — Live diarization + enrollment.** FluidAudio Sortformer labels +
   `SpeakerManager` persistent identity.
-- **Phase 3 — Final pass.** Parakeet TDT v3 batch + offline pyannote, merged
-  into the authoritative transcript; identity resolution.
+- **Phase 3 — Final pass.** Parakeet TDT v3 batch + Sortformer batch diarization,
+  merged into the authoritative transcript; `wespeaker_v2` identity resolution.
 - **Phase 4 — Summaries.** `Summarizer` protocol → MLX (Gemma default) one-pass
   + Apple FM map-reduce fallback; two-prompt strategy.
 - **Throughout** — retention policy, settings, the "flag this moment" hotkey,
