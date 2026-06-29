@@ -1,15 +1,15 @@
 import Foundation
 
 /// Runs the **final pass** end to end: re-transcribe a finished session's saved
-/// audio with the batch recognizer, diarize the system track offline, and merge
-/// the two into the authoritative ``Transcript`` (DESIGN.md §3, §14 Phase 3).
+/// audio with the batch recognizer, diarize the system track, and merge the two
+/// into the authoritative ``Transcript`` (DESIGN.md §3, §14 Phase 3).
 ///
 /// This is the orchestration seam that ties the proven pieces together —
 /// ``RecordingReader`` (saved AAC → frames), a batch ``Transcriber`` per track,
-/// an offline ``Diarizer`` for the remote speakers, and ``TranscriptMerger``.
+/// a ``Diarizer`` for the remote speakers, and ``TranscriptMerger``.
 /// It depends only on those protocols and value types, never a concrete model,
 /// so the whole flow is unit-testable with fakes; the real engines are injected
-/// by the app (Parakeet + offline pyannote). Each track is decoded once and held
+/// by the app (Parakeet + Sortformer). Each track is decoded once and held
 /// in memory for the pass — bounded by meeting length, simpler than re-decoding.
 public struct FinalPass: Sendable {
     /// Makes the batch ``Transcriber`` for one track. A factory (not a single
@@ -277,9 +277,8 @@ public struct FinalPass: Sendable {
         }
     }
 
-    /// Offline-diarize the system track into its final remote-speaker timeline
-    /// (the last snapshot the diarizer emits) under the watchdog; an empty track
-    /// yields none.
+    /// Diarize the system track into its final remote-speaker timeline (the last
+    /// snapshot the diarizer emits) under the watchdog; an empty track yields none.
     private func diarize(_ frames: [AudioFrame]) async throws -> SpeakerTimeline {
         guard !frames.isEmpty else { return SpeakerTimeline() }
         let diarizer = diarizer

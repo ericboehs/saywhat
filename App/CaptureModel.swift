@@ -81,15 +81,13 @@ final class CaptureModel {
     private let diarizer: any Diarizer = SortformerLiveDiarizer()
     private var recording: Task<Void, Never>?
 
-    /// Hybrid diarization for the final pass: turns from Sortformer (it splits the
-    /// remote speakers cleanly where offline pyannote glues them together) and
-    /// voiceprints from pyannote (DESIGN.md §3, §6). Held once so its models stay
+    /// Diarization for the final pass: turns from Sortformer (it splits the remote
+    /// speakers cleanly, where the dropped offline pyannote pass glued them
+    /// together), with voiceprints extracted separately by the shared
+    /// `wespeaker_v2` embedder (DESIGN.md §3, §6). Held once so its models stay
     /// loaded across recordings; the pass itself is rebuilt per run to pick up the
     /// current matching fuzziness.
-    private let finalDiarizer: any Diarizer = HybridDiarizer(
-        turns: SortformerLiveDiarizer(),
-        embeddings: OfflinePyannoteDiarizer()
-    )
+    private let finalDiarizer: any Diarizer = SortformerLiveDiarizer()
 
     /// The persistent voiceprint directory: lets the final pass name remote
     /// speakers ("Eric") the same way across meetings, and where a rename is
