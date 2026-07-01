@@ -29,13 +29,15 @@ public struct RecordingSession: Sendable {
     public func writer(
         for source: CaptureSource,
         format: AudioStreamFormat = .model,
-        rotation: SegmentRotationPolicy = SegmentRotationPolicy()
+        rotation: SegmentRotationPolicy = SegmentRotationPolicy(),
+        realTime: Bool = true
     ) throws -> DurableAACWriter {
         try DurableAACWriter(
             directory: directory,
             source: source,
             format: format,
-            rotation: rotation
+            rotation: rotation,
+            realTime: realTime
         )
     }
 

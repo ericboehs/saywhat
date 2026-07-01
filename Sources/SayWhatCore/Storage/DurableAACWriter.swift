@@ -36,6 +36,7 @@ public actor DurableAACWriter: DurableAudioWriter {
     private let sampleRate: Int
     private let inputFormat: AVAudioFormat
     private let outputSettings: [String: Any]
+    private let isRealTime: Bool
 
     private var currentIndex = -1
     private var writer: AVAssetWriter?
@@ -48,11 +49,19 @@ public actor DurableAACWriter: DurableAudioWriter {
     ///   - source: the single track this writer persists.
     ///   - format: PCM format of the incoming frames (the model format).
     ///   - rotation: segment-length policy bounding crash loss.
+    ///   - realTime: `true` (default) for live capture — the encoder is fed at
+    ///     wall-clock rate and a momentarily-behind encoder *drops* the in-flight
+    ///     frame rather than block the capture thread. `false` for offline writing
+    ///     (import/reprocess), where frames arrive far faster than real time: the
+    ///     append instead **waits** for the encoder to drain, because losing audio
+    ///     from a file we already hold is never acceptable (it silently truncated
+    ///     imports to ~20% before this flag existed).
     public init(
         directory: URL,
         source: CaptureSource,
         format: AudioStreamFormat = .model,
-        rotation: SegmentRotationPolicy = SegmentRotationPolicy()
+        rotation: SegmentRotationPolicy = SegmentRotationPolicy(),
+        realTime: Bool = true
     ) throws {
         guard
             let pcm = AVAudioFormat(
@@ -66,6 +75,7 @@ public actor DurableAACWriter: DurableAudioWriter {
         self.directory = directory
         self.source = source
         self.rotation = rotation
+        isRealTime = realTime
         sampleRate = format.sampleRate
         inputFormat = pcm
         outputSettings = [
@@ -86,11 +96,20 @@ public actor DurableAACWriter: DurableAudioWriter {
         }
 
         guard let input else { throw StorageError.encodeFailed }
-        // Drop rather than block the consumer if the encoder is briefly behind;
-        // at 16 kHz mono / 32 kbps this effectively never trips.
-        guard input.isReadyForMoreMediaData else {
-            Self.log.error("encoder not ready; dropped \(frame.samples.count) samples")
-            return
+        if !input.isReadyForMoreMediaData {
+            if isRealTime {
+                // Live capture: drop rather than block the consumer if the encoder
+                // is briefly behind; at 16 kHz mono / 32 kbps this effectively never
+                // trips.
+                Self.log.error("encoder not ready; dropped \(frame.samples.count) samples")
+                return
+            }
+            // Offline (import/reprocess): frames arrive far faster than real time, so
+            // the encoder *will* fall behind — wait for it to drain instead of
+            // dropping, or the file is silently truncated.
+            while !input.isReadyForMoreMediaData {
+                try await Task.sleep(for: .milliseconds(2))
+            }
         }
 
         let pts = CMTime(
@@ -129,7 +148,7 @@ public actor DurableAACWriter: DurableAudioWriter {
             throw StorageError.writerSetupFailed
         }
         let assetInput = AVAssetWriterInput(mediaType: .audio, outputSettings: outputSettings)
-        assetInput.expectsMediaDataInRealTime = true
+        assetInput.expectsMediaDataInRealTime = isRealTime
 
         guard assetWriter.canAdd(assetInput) else { throw StorageError.writerSetupFailed }
         assetWriter.add(assetInput)
