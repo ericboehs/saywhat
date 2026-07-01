@@ -101,6 +101,7 @@ public struct FinalPass: Sendable {
     private let store: VoiceprintStore?
     private let resegmenter: SpeakerResegmenter
     private let embedder: (any SpeakerEmbedder)?
+    private let onsetRefiner: OnsetRefiner?
 
     /// Minimum system audio a slot needs before we trust an identity embedding
     /// from it — short interjections don't carry a stable voiceprint. One second
@@ -123,6 +124,9 @@ public struct FinalPass: Sendable {
     ///   - embedder: extracts the `wespeaker_v2` identity vector for a turn's
     ///     audio — the one space live and final recognition share. `nil` (or no
     ///     store) skips identity resolution entirely (generic `Speaker N` labels).
+    ///   - onsetRefiner: snaps diarizer turn boundaries to the ASR's word/silence
+    ///     structure before the merge, recovering onset-lag mislabels. `nil` (the
+    ///     default) leaves the diarizer's boundaries untouched.
     public init(
         reader: RecordingReader = RecordingReader(),
         diarizer: any Diarizer,
@@ -131,6 +135,7 @@ public struct FinalPass: Sendable {
         store: VoiceprintStore? = nil,
         resegmenter: SpeakerResegmenter = SpeakerResegmenter(),
         embedder: (any SpeakerEmbedder)? = nil,
+        onsetRefiner: OnsetRefiner? = nil,
         makeTranscriber: @escaping MakeTranscriber
     ) {
         self.reader = reader
@@ -140,6 +145,7 @@ public struct FinalPass: Sendable {
         self.store = store
         self.resegmenter = resegmenter
         self.embedder = embedder
+        self.onsetRefiner = onsetRefiner
         self.makeTranscriber = makeTranscriber
     }
 
@@ -194,10 +200,18 @@ public struct FinalPass: Sendable {
         ) }
 
         report(.merging, nil)
+        // Optionally snap the diarizer's turn bounds to the ASR's word/silence
+        // structure, recovering onset-lag mislabels before the merge attributes
+        // each word by coverage. Labels and turn count are preserved.
+        let timeline = refineOnsets(
+            resegmented.resegmentation.timeline,
+            using: onsetRefiner,
+            words: system
+        )
         let transcript = merger.merge(
             mic: mic,
             system: system,
-            remoteSpeakers: resegmented.resegmentation.timeline,
+            remoteSpeakers: timeline,
             names: resegmented.resegmentation.speakers.mapValues(\.name)
         )
         return Outcome(
@@ -239,13 +253,6 @@ public struct FinalPass: Sendable {
             }
         }
         return result
-    }
-
-    /// Seconds two timeline ranges overlap, `0` when they're disjoint.
-    private static func overlapSeconds(_ lhs: Range<Duration>, _ rhs: Range<Duration>) -> Double {
-        let lower = max(lhs.lowerBound, rhs.lowerBound)
-        let upper = min(lhs.upperBound, rhs.upperBound)
-        return upper > lower ? (upper - lower).seconds : 0
     }
 
     /// Re-segment the diarized timeline by **voice** and resolve each resulting
@@ -394,4 +401,26 @@ public struct FinalPass: Sendable {
             continuation.finish()
         }
     }
+}
+
+private extension FinalPass {
+    /// Seconds two timeline ranges overlap, `0` when they're disjoint.
+    static func overlapSeconds(_ lhs: Range<Duration>, _ rhs: Range<Duration>) -> Double {
+        let lower = max(lhs.lowerBound, rhs.lowerBound)
+        let upper = min(lhs.upperBound, rhs.upperBound)
+        return upper > lower ? (upper - lower).seconds : 0
+    }
+}
+
+/// Apply an optional ``OnsetRefiner`` to a diarized `timeline` using the system
+/// track's word timings, returning the timeline unchanged when no refiner is wired.
+/// Free-standing so the pass's orchestration stays compact.
+private func refineOnsets(
+    _ timeline: SpeakerTimeline,
+    using refiner: OnsetRefiner?,
+    words segments: [TranscriptSegment]
+) -> SpeakerTimeline {
+    guard let refiner else { return timeline }
+    let words = segments.flatMap(\.words)
+    return SpeakerTimeline(turns: refiner.refine(turns: timeline.turns, words: words))
 }

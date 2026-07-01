@@ -116,8 +116,8 @@ final class CaptureModel {
     private var liveNamer: LiveSpeakerNamer?
 
     /// The batch final pass over the session's saved AAC — Parakeet per track,
-    /// hybrid diarization, merged into the authoritative transcript. Rebuilt each
-    /// run so the speaker matcher reflects the user's current fuzziness setting.
+    /// hybrid diarization, boundary-refined, merged into the authoritative
+    /// transcript. Rebuilt each run so the matcher reflects the fuzziness setting.
     private func makeFinalPass() -> FinalPass {
         FinalPass(
             diarizer: finalDiarizer,
@@ -127,6 +127,7 @@ final class CaptureModel {
                         .matchThreshold))
             ),
             embedder: speakerEmbedder,
+            onsetRefiner: OnsetRefiner(),
             makeTranscriber: { ParakeetTranscriber(source: $0) }
         )
     }
