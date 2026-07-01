@@ -50,5 +50,18 @@ let package = Package(
             dependencies: ["SayWhatCore"],
             swiftSettings: swiftSettings
         ),
+        // Pure benchmark metrics — WER, DER + cluster consistency, boundary accuracy
+        // — over two transcripts (a hypothesis and a ground-truth reference). No
+        // models, no I/O, no network: fully unit-tested like the rest of the core.
+        .target(
+            name: "SayWhatBench",
+            dependencies: ["SayWhatCore"],
+            swiftSettings: swiftSettings
+        ),
+        .testTarget(
+            name: "SayWhatBenchTests",
+            dependencies: ["SayWhatBench", "SayWhatCore"],
+            swiftSettings: swiftSettings
+        ),
     ]
 )
