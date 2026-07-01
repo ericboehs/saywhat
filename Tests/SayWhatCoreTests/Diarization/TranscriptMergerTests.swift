@@ -353,6 +353,44 @@ extension TranscriptMergerTests {
         #expect(result.utterances.map(\.text) == ["one two"])
     }
 
+    @Test("a sub-threshold breath after a sentence still breaks the paragraph")
+    func sentenceBreathBreaksParagraph() {
+        // A 1s gap — under the 1.5s pause threshold, but over sentencePause — where
+        // the prior text closed a sentence: a speaker's own question then answer.
+        let system = [
+            segment(.system, "can someone explain the calendar again?", from: 0, to: 3),
+            segment(.system, "Sure, I've been struggling with it.", from: 4, to: 7),
+        ]
+        let result = TranscriptMerger().merge(
+            mic: [],
+            system: system,
+            remoteSpeakers: SpeakerTimeline()
+        )
+
+        #expect(result.utterances.map(\.text) == [
+            "can someone explain the calendar again?",
+            "Sure, I've been struggling with it.",
+        ])
+        #expect(result.utterances.map(\.start) == [.seconds(0), .seconds(4)])
+    }
+
+    @Test("a sub-threshold breath mid-sentence keeps one paragraph")
+    func sentenceBreathMidClauseKeepsParagraph() {
+        // Same 1s gap, but the prior text did *not* end a sentence — a mid-clause
+        // hesitation must not shatter the turn into fragments.
+        let system = [
+            segment(.system, "I was going to say", from: 0, to: 3),
+            segment(.system, "I'll find the link", from: 4, to: 7),
+        ]
+        let result = TranscriptMerger().merge(
+            mic: [],
+            system: system,
+            remoteSpeakers: SpeakerTimeline()
+        )
+
+        #expect(result.utterances.map(\.text) == ["I was going to say I'll find the link"])
+    }
+
     @Test("a long monologue breaks at the next sentence boundary, not mid-sentence")
     func longMonologueBreaksAtSentence() {
         // One continuous speaker, no pause over the threshold, but past the 20s
