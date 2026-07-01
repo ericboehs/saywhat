@@ -17,6 +17,11 @@ public struct TranscriptMerger: Sendable {
     /// A silence between consecutive same-speaker words long enough to end the
     /// current paragraph and start a new (separately timestamped) one.
     private let paragraphPause: Duration
+    /// A shorter silence that still ends a paragraph *when the previous text closed
+    /// a sentence* — a speaker's own question and answer ("…again? Sure, …") are
+    /// separated by a breath well under ``paragraphPause``, and fusing them into one
+    /// block both mis-times the turn and reads worse than the two beats it was.
+    private let sentencePause: Duration
     /// Once a paragraph runs this long, it breaks at the next sentence boundary so
     /// an uninterrupted monologue doesn't render as one unreadable wall of text.
     private let maxParagraph: Duration
@@ -24,13 +29,18 @@ public struct TranscriptMerger: Sendable {
     /// - Parameters:
     ///   - paragraphPause: pause between words that starts a new paragraph
     ///     (default 1.5s — comfortably past a between-sentence breath).
+    ///   - sentencePause: the shorter pause that breaks a paragraph only when the
+    ///     prior text ends a sentence (default 0.75s — a beat, not a mid-clause
+    ///     hesitation), so a question and its own answer don't fuse.
     ///   - maxParagraph: soft cap after which a paragraph breaks at the next
     ///     sentence end (default 20s).
     public init(
         paragraphPause: Duration = .seconds(1.5),
+        sentencePause: Duration = .seconds(0.75),
         maxParagraph: Duration = .seconds(20)
     ) {
         self.paragraphPause = paragraphPause
+        self.sentencePause = sentencePause
         self.maxParagraph = maxParagraph
     }
 
@@ -131,7 +141,9 @@ public struct TranscriptMerger: Sendable {
     /// long — at a sentence boundary, so a monologue reads as timestamped
     /// paragraphs instead of one wall of text.
     private func breaksParagraph(after last: Transcript.Utterance, before atom: Atom) -> Bool {
-        if atom.range.lowerBound - last.end > paragraphPause { return true }
+        let gap = atom.range.lowerBound - last.end
+        if gap > paragraphPause { return true }
+        if gap > sentencePause, Self.endsSentence(last.text) { return true }
         if atom.range.upperBound - last.start > maxParagraph, Self.endsSentence(last.text) {
             return true
         }
