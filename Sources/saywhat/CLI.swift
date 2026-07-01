@@ -83,8 +83,14 @@ enum CLI {
         progress("importing \(source.lastPathComponent)…")
         try await RecordingImporter()(source, into: session)
 
+        // Opt-in onset-boundary refinement (prototype): snap diarizer turn edges to
+        // the ASR's word/silence structure. Enable with SAYWHAT_REFINE_ONSETS=1.
+        let refiner = ProcessInfo.processInfo.environment["SAYWHAT_REFINE_ONSETS"] != nil
+            ? OnsetRefiner()
+            : nil
         let pass = FinalPass(
             diarizer: SortformerLiveDiarizer(),
+            onsetRefiner: refiner,
             makeTranscriber: { ParakeetTranscriber(source: $0) }
         )
         return try await pass.run(session) { update in
