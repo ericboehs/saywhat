@@ -80,52 +80,52 @@ private struct FakeDiarizer: Diarizer {
     }
 }
 
+/// Write a tone to one track so the session has real, decodable AAC for
+/// ``RecordingReader`` to stream back. File-scope so every suite here shares it.
+private func writeTrack(
+    _ source: CaptureSource,
+    in session: RecordingSession,
+    seconds: Int
+) async throws {
+    let writer = try session.writer(for: source)
+    for index in 0 ..< seconds {
+        let samples = (0 ..< 16000).map { Float(sin(Double($0) * 0.05)) }
+        try await writer.append(AudioFrame(
+            source: source,
+            startOffset: .seconds(index),
+            samples: samples
+        ))
+    }
+    try await writer.finalize()
+}
+
+private func makeSession() -> RecordingSession {
+    let dir = FileManager.default.temporaryDirectory
+        .appendingPathComponent("finalpass-\(UUID().uuidString)", isDirectory: true)
+    return RecordingSession(directory: dir)
+}
+
+private func script(
+    _ source: CaptureSource,
+    _ text: String,
+    _ from: Double,
+    _ to: Double
+) -> TranscriptSegment {
+    TranscriptSegment(
+        source: source,
+        text: text,
+        range: .seconds(from) ..< .seconds(to),
+        isFinal: true
+    )
+}
+
 @Suite("FinalPass")
 struct FinalPassTests {
-    /// Write a tone to one track so the session has real, decodable AAC for
-    /// ``RecordingReader`` to stream back.
-    private func writeTrack(
-        _ source: CaptureSource,
-        in session: RecordingSession,
-        seconds: Int
-    ) async throws {
-        let writer = try session.writer(for: source)
-        for index in 0 ..< seconds {
-            let samples = (0 ..< 16000).map { Float(sin(Double($0) * 0.05)) }
-            try await writer.append(AudioFrame(
-                source: source,
-                startOffset: .seconds(index),
-                samples: samples
-            ))
-        }
-        try await writer.finalize()
-    }
-
-    private func makeSession() -> RecordingSession {
-        let dir = FileManager.default.temporaryDirectory
-            .appendingPathComponent("finalpass-\(UUID().uuidString)", isDirectory: true)
-        return RecordingSession(directory: dir)
-    }
-
     /// Enroll a person with a single exemplar embedding into `store`.
     private func enroll(_ store: VoiceprintStore, _ name: String, _ embedding: [Float]) throws {
         let person = Person(name: name)
         try store.savePerson(person)
         try store.save(Voiceprint(personID: person.id, embedding: embedding))
-    }
-
-    private func script(
-        _ source: CaptureSource,
-        _ text: String,
-        _ from: Double,
-        _ to: Double
-    ) -> TranscriptSegment {
-        TranscriptSegment(
-            source: source,
-            text: text,
-            range: .seconds(from) ..< .seconds(to),
-            isFinal: true
-        )
     }
 
     @Test("merges both tracks and the diarized timeline into the authoritative transcript")
@@ -173,15 +173,17 @@ struct FinalPassTests {
             makeTranscriber: { FakeTranscriber(source: $0, script: []) }
         )
 
-        _ = try await pass.run(session) { phase in
-            phases.withLock { $0.append(phase) }
+        _ = try await pass.run(session) { progress in
+            phases.withLock { $0.append(progress.phase) }
         }
 
-        let captured: [FinalPass.Phase] = phases.withLock { $0 }
-        #expect(captured == [
+        // Empty fakes emit no sub-progress, so each phase shows up once at its
+        // boundary — the canonical stage order, identify before assemble.
+        #expect(phases.withLock { $0 } == [
             .transcribing(.microphone),
             .transcribing(.system),
             .diarizing,
+            .identifying,
             .merging,
         ])
     }
@@ -395,5 +397,50 @@ struct FinalPassTests {
         let transcript = try await pass.run(session).transcript
 
         #expect(transcript.utterances.first?.speakerName == nil)
+    }
+}
+
+@Suite("FinalPass staging")
+struct FinalPassStagingTests {
+    /// The transcript is offered as staged partials so the UI can show text right
+    /// after transcription, then refine it in place: stage 0 carries every word in
+    /// one undifferentiated speaker, stage 1 carries the diarized split.
+    @Test("emits staged partials — text first, then separated speakers")
+    func emitsStagedPartials() async throws {
+        let session = makeSession()
+        try session.createDirectory()
+        try await writeTrack(.microphone, in: session, seconds: 2)
+        try await writeTrack(.system, in: session, seconds: 2)
+        defer { try? FileManager.default.removeItem(at: session.directory) }
+
+        // Two remote speakers, one word landing squarely in each one's window.
+        let timeline = SpeakerTimeline(turns: [
+            SpeakerTurn(speaker: 0, range: .seconds(0) ..< .seconds(1)),
+            SpeakerTurn(speaker: 1, range: .seconds(1) ..< .seconds(2)),
+        ])
+        let systemScript = [script(.system, "hello", 0, 1), script(.system, "there", 1, 2)]
+        let pass = FinalPass(
+            diarizer: FakeDiarizer(timeline: timeline),
+            makeTranscriber: { source in
+                FakeTranscriber(source: source, script: source == .system ? systemScript : [])
+            }
+        )
+
+        let partials = Mutex<[FinalPass.Partial]>([])
+        _ = try await pass.run(session) { _ in } onPartial: { partial in
+            partials.withLock { $0.append(partial) }
+        }
+
+        let staged = partials.withLock { $0 }
+        #expect(staged.map(\.stage) == [0, 1])
+
+        // Stage 0: text is present, but every word sits in one undifferentiated slot.
+        let stage0 = staged[0].outcome.transcript
+        #expect(!stage0.utterances.isEmpty)
+        #expect(Set(stage0.utterances.compactMap(\.speaker.remoteSlot)).count == 1)
+
+        // Stage 1: the diarized timeline separates the two remote speakers.
+        let stage1 = staged[1].outcome.transcript
+        #expect(Set(stage1.utterances.compactMap(\.speaker.remoteSlot)).count == 2)
     }
 }

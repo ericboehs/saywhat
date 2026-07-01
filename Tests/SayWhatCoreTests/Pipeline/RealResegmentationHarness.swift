@@ -46,8 +46,9 @@ struct RealResegmentationHarness {
             makeTranscriber: { ParakeetTranscriber(source: $0) }
         )
 
-        let outcome = try await pass.run(RecordingSession(directory: sessionDir)) { phase in
-            print("── phase: \(phase) ──")
+        let outcome = try await pass.run(RecordingSession(directory: sessionDir)) { progress in
+            let pct = progress.fraction.map { " \(Int($0 * 100))%" } ?? ""
+            print("── phase: \(progress.phase)\(pct) ──")
         }
 
         print("── resolved groups ──")
