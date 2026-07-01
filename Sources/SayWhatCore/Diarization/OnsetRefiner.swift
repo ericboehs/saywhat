@@ -45,7 +45,7 @@ public struct OnsetRefiner: Sendable {
     public func refine(turns: [SpeakerTurn], words: [WordTiming]) -> [SpeakerTurn] {
         guard turns.count > 1, words.count > 1 else { return turns }
         var result = turns.sorted { $0.range.lowerBound < $1.range.lowerBound }
-        let silences = interWordSilences(words)
+        let gaps = interWordGaps(words)
 
         for index in 0 ..< (result.count - 1) {
             let earlier = result[index]
@@ -58,7 +58,12 @@ public struct OnsetRefiner: Sendable {
             let outer = max(earlier.range.upperBound, later.range.lowerBound)
             let zone = (inner - searchWindow) ..< (outer + searchWindow)
 
-            guard let split = largestSilence(in: zone, among: silences) else { continue }
+            // Prefer a real pause; failing that, fall back to a sentence-final word
+            // gap before the (always-late) diarizer edge — rapid turn-taking often
+            // has no snap-able silence but does land on a "…?" / "…." boundary.
+            guard let split = largestSilence(in: zone, among: gaps)
+                ?? sentenceSplit(in: zone, before: outer, among: gaps)
+            else { continue }
 
             // Trim the earlier turn's tail back to the silence start (when the silence
             // falls inside its run), and pull the later turn's lagging onset back to
@@ -84,28 +89,65 @@ public struct OnsetRefiner: Sendable {
         return result
     }
 
-    /// Each silence between consecutive words, as the `[end-of-word ..< start-of-next]`
-    /// gap. Words are sorted first so gaps are non-negative and in time order.
-    private func interWordSilences(_ words: [WordTiming]) -> [Range<Duration>] {
+    /// One inter-word gap: the `[end-of-word ..< start-of-next]` silence, tagged with
+    /// whether the word *before* it ends a sentence (a `.`, `?`, or `!`).
+    private struct Gap {
+        let range: Range<Duration>
+        let endsSentence: Bool
+        var width: Duration {
+            range.upperBound - range.lowerBound
+        }
+    }
+
+    /// Each gap between consecutive words. Words are sorted first so gaps are
+    /// non-negative and in time order; the sentence flag reads the preceding word.
+    private func interWordGaps(_ words: [WordTiming]) -> [Gap] {
         let sorted = words.sorted { $0.range.lowerBound < $1.range.lowerBound }
-        var gaps: [Range<Duration>] = []
+        var gaps: [Gap] = []
         for pair in zip(sorted, sorted.dropFirst()) {
             let lower = pair.0.range.upperBound
             let upper = pair.1.range.lowerBound
-            if upper > lower { gaps.append(lower ..< upper) }
+            if upper > lower {
+                gaps.append(Gap(
+                    range: lower ..< upper,
+                    endsSentence: Self.endsSentence(pair.0.text)
+                ))
+            }
         }
         return gaps
     }
 
-    /// The widest silence fully inside `zone` and at least ``minSilence`` long, or
-    /// `nil` when the transition has no pause worth snapping to.
-    private func largestSilence(
+    /// The widest gap fully inside `zone` and at least ``minSilence`` long, or `nil`
+    /// when the transition has no pause worth snapping to.
+    private func largestSilence(in zone: Range<Duration>, among gaps: [Gap]) -> Range<Duration>? {
+        gaps
+            .filter {
+                $0.range.lowerBound >= zone.lowerBound && $0.range.upperBound <= zone.upperBound
+            }
+            .filter { $0.width >= minSilence }
+            .max { $0.width < $1.width }?
+            .range
+    }
+
+    /// Fallback for pause-less turn changes: the **latest** sentence-final gap that
+    /// falls inside `zone` and no later than the diarizer's own edge (`boundary`).
+    /// Onset lag only ever runs *late*, so the true seam sits at or before it; among
+    /// candidates the latest one over-corrects least. `nil` when none qualifies.
+    private func sentenceSplit(
         in zone: Range<Duration>,
-        among silences: [Range<Duration>]
+        before boundary: Duration,
+        among gaps: [Gap]
     ) -> Range<Duration>? {
-        silences
-            .filter { $0.lowerBound >= zone.lowerBound && $0.upperBound <= zone.upperBound }
-            .filter { ($0.upperBound - $0.lowerBound) >= minSilence }
-            .max { ($0.upperBound - $0.lowerBound) < ($1.upperBound - $1.lowerBound) }
+        gaps
+            .filter(\.endsSentence)
+            .filter { $0.range.lowerBound >= zone.lowerBound && $0.range.upperBound <= boundary }
+            .max { $0.range.lowerBound < $1.range.lowerBound }?
+            .range
+    }
+
+    /// Whether `text`'s last non-space character ends a sentence (`.`, `?`, or `!`).
+    private static func endsSentence(_ text: String) -> Bool {
+        guard let last = text.reversed().first(where: { !$0.isWhitespace }) else { return false }
+        return last == "." || last == "?" || last == "!"
     }
 }
