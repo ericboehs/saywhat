@@ -30,24 +30,25 @@ Benchmarks/
 
 ## Workflow
 
-Build the CLI once (`swift build`), then:
+Build the CLI once (`swift build`), then — using a local fixture named
+`team-calendar-60s` as the running example:
 
 ```bash
 # 1. Produce a hypothesis from any audio file with the on-device pass.
-swift run saywhat transcribe Benchmarks/<name>/audio.wav \
-  --out Benchmarks/<name>/ondevice.jsonl
+swift run saywhat transcribe Benchmarks/team-calendar-60s/audio.wav \
+  --out Benchmarks/team-calendar-60s/ondevice.jsonl
 
 # 2. (optional) Produce a cloud SOTA hypothesis for the same file.
 #    Key stays in the process — never written to disk, a commit, or this repo.
 DEEPGRAM_API_KEY=$(op read "op://Personal/Deepgram/credential") \
-  swift run saywhat transcribe Benchmarks/<name>/audio.wav \
-    --engine deepgram --out Benchmarks/<name>/deepgram.jsonl
+  swift run saywhat transcribe Benchmarks/team-calendar-60s/audio.wav \
+    --engine deepgram --out Benchmarks/team-calendar-60s/deepgram.jsonl
 
 # 3. Score each hypothesis against the reference.
-swift run saywhat bench Benchmarks/<name>/ondevice.jsonl \
-  Benchmarks/<name>/reference.jsonl --system "on-device (Parakeet+Sortformer)"
-swift run saywhat bench Benchmarks/<name>/deepgram.jsonl \
-  Benchmarks/<name>/reference.jsonl --system "Deepgram Nova-3"
+swift run saywhat bench Benchmarks/team-calendar-60s/ondevice.jsonl \
+  Benchmarks/team-calendar-60s/reference.jsonl --system "on-device (Parakeet+Sortformer)"
+swift run saywhat bench Benchmarks/team-calendar-60s/deepgram.jsonl \
+  Benchmarks/team-calendar-60s/reference.jsonl --system "Deepgram Nova-3"
 ```
 
 The hypothesis files are disposable — regenerate them anytime from the audio. Only
