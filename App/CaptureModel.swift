@@ -60,6 +60,16 @@ final class CaptureModel {
     var voiceprintDirectory: [EnrolledPerson] = []
     /// Non-nil while the final pass runs, narrating its current stage.
     var finalizeStatus: String?
+    /// How far through the current stage, `0...1`, or `nil` when the stage can't be
+    /// metered (then the UI shows an indeterminate bar). Resets each new stage.
+    /// Driven by ``advanceFinalize(_:)``/``setImportProgress(_:)``; the UI only reads.
+    var finalizeProgress: Double?
+    /// The stage `finalizeProgress` belongs to, so a late progress tick from the
+    /// prior stage can't drag the new stage's bar backward.
+    var finalizePhase: FinalPass.Phase?
+    /// Highest ``FinalPass/Partial`` stage applied to ``finalTranscript``, so a late
+    /// main-actor hop can't replace a newer staged transcript with an older one.
+    var finalizeStage = -1
     /// Plays the finished recording's mixed audio so the final transcript can be
     /// followed karaoke-style; set once the final pass produces a transcript.
     var playback: PlaybackController?
@@ -255,12 +265,23 @@ final class CaptureModel {
     /// Run the batch final pass over a finalized session and surface the
     /// authoritative transcript. Failures (e.g. a model download) surface as a
     /// message and never affect the saved recording, which is already durable.
-    private func runFinalPass(_ session: RecordingSession) async {
+    func runFinalPass(_ session: RecordingSession) async {
         finalizeStatus = Self.describe(.transcribing(.microphone))
+        // Clear any prior transcript so the staged results (text → separated → named)
+        // appear from a clean slate, the spinner showing until the first stage lands.
+        finalTranscript = nil
+        speakers = [:]
+        utteranceVoiceprints = [:]
+        finalizeStage = -1
         do {
-            let outcome = try await makeFinalPass().run(session) { phase in
-                Task { @MainActor in self.finalizeStatus = Self.describe(phase) }
+            let outcome = try await makeFinalPass().run(session) { progress in
+                Task { @MainActor in self.advanceFinalize(progress) }
+            } onPartial: { partial in
+                Task { @MainActor in self.applyPartial(partial) }
             }
+            // The returned outcome is the final, named stage — it supersedes every
+            // partial, so claim the top stage before assigning to lock out late ticks.
+            finalizeStage = .max
             finalTranscript = outcome.transcript
             speakers = outcome.speakers
             utteranceVoiceprints = outcome.utteranceVoiceprints
@@ -271,17 +292,18 @@ final class CaptureModel {
             // Surface the just-finished recording in the sidebar and select it.
             selectedSessionID = session.directory.lastPathComponent
             refreshSessions()
-            // Make the saved audio playable so the transcript can be followed
-            // along; a failure here just leaves playback unavailable.
-            let controller = PlaybackController()
-            await controller.load(session: session)
-            if controller.isReady { playback = controller }
+            // Swap in the finalized mix for playback, carrying any in-progress
+            // import playhead so listening stays continuous (a failure here just
+            // leaves playback unavailable).
+            await loadSessionPlayback(for: session)
         } catch let timeout as TimeoutError {
             errorMessage = "Finalize timed out at \(timeout.label). The recording is saved — try again."
         } catch {
             errorMessage = "finalize: \(error)"
         }
         finalizeStatus = nil
+        finalizeProgress = nil
+        finalizePhase = nil
     }
 
     /// Whether the open recording can be reprocessed: one is selected and we're
@@ -303,11 +325,12 @@ final class CaptureModel {
     }
 
     /// A reader-facing description of a final-pass stage.
-    private static func describe(_ phase: FinalPass.Phase) -> String {
+    static func describe(_ phase: FinalPass.Phase) -> String {
         switch phase {
         case .transcribing(.microphone): "Transcribing your audio…"
         case .transcribing(.system): "Transcribing the meeting…"
-        case .diarizing: "Identifying speakers…"
+        case .diarizing: "Separating speakers…"
+        case .identifying: "Identifying speakers…"
         case .merging: "Assembling transcript…"
         }
     }

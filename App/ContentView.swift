@@ -13,11 +13,15 @@ struct ContentView: View {
             DetailPane(model: model)
         }
         .task { model.refreshSessions() }
-        // Expose the reprocess action to the Debug menu, which can't reach this
-        // window's model directly.
+        // Expose the reprocess and import actions to the Debug menu, which can't
+        // reach this window's model directly.
         .focusedSceneValue(\.reprocess, ReprocessAction(
             isAvailable: model.canReprocess,
             run: { model.reprocessSelected() }
+        ))
+        .focusedSceneValue(\.importRecording, ImportAction(
+            isAvailable: model.canImport,
+            run: { model.importRecording(from: $0) }
         ))
     }
 }
@@ -129,6 +133,13 @@ private struct DetailPane: View {
                 }
             }
 
+            // Once the transcript is on screen, the remaining stages (separating,
+            // identifying) narrate in a slim strip pinned above it rather than
+            // replacing it with a spinner.
+            if let status = model.finalizeStatus, model.finalTranscript != nil {
+                FinalizeStrip(status: status, fraction: model.finalizeProgress)
+            }
+
             content
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
 
@@ -154,15 +165,11 @@ private struct DetailPane: View {
         .frame(minWidth: 480, minHeight: 540)
     }
 
-    /// The main panel: finalize progress, a live transcript while recording, the
-    /// editable final transcript with playback, or a placeholder.
+    /// The main panel: a live transcript while recording, the editable final
+    /// transcript (shown the moment the staged pass produces text, then refined in
+    /// place), the pre-transcript finalize spinner, or a placeholder.
     @ViewBuilder private var content: some View {
-        if let status = model.finalizeStatus {
-            VStack(spacing: 10) {
-                ProgressView()
-                Text(status).foregroundStyle(.secondary)
-            }
-        } else if model.isRecording {
+        if model.isRecording {
             LiveTranscriptView(
                 transcript: model.transcript,
                 active: true,
@@ -170,7 +177,25 @@ private struct DetailPane: View {
                 debugLine: showDebug ? { model.liveDebugLine(for: $0) } : nil
             )
         } else if let finalTranscript = model.finalTranscript {
+            // The staged pass surfaces text first; the top strip narrates the rest.
             transcript(finalTranscript)
+        } else if let status = model.finalizeStatus {
+            VStack(spacing: 16) {
+                Spacer()
+                VStack(spacing: 10) {
+                    // Determinate when the stage reports a fraction, indeterminate
+                    // otherwise — `ProgressView(value:)` renders a spinner for nil.
+                    ProgressView(value: model.finalizeProgress)
+                        .progressViewStyle(.linear)
+                        .frame(maxWidth: 260)
+                    Text(status).foregroundStyle(.secondary)
+                }
+                Spacer()
+                // The source audio is already playable, so offer the transport even
+                // before any transcript text lands — pinned at the bottom, clear of
+                // the centered status.
+                playbackBar
+            }
         } else if model.selectedSessionID != nil {
             placeholder("This recording has no saved transcript.", systemImage: "text.badge.xmark")
                 .overlay(alignment: .bottom) { playbackBar }
@@ -202,6 +227,34 @@ private struct DetailPane: View {
 
     private func placeholder(_ title: String, systemImage: String) -> some View {
         ContentUnavailableView(title, systemImage: systemImage)
+    }
+}
+
+/// A slim status strip shown above the transcript while the later final-pass stages
+/// (separating, identifying) finish — narrates the stage and how far along it is, so
+/// the transcript stays visible and refines in place instead of vanishing behind a
+/// spinner. A determinate bar when the stage reports a fraction, indeterminate else.
+private struct FinalizeStrip: View {
+    let status: String
+    let fraction: Double?
+
+    var body: some View {
+        HStack(spacing: 10) {
+            ProgressView(value: fraction)
+                .progressViewStyle(.linear)
+                .frame(maxWidth: 180)
+            Text(status)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            if let fraction {
+                Text("\(Int(fraction * 100))%")
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(.tertiary)
+            }
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 7)
+        .background(.bar, in: Capsule())
     }
 }
 
