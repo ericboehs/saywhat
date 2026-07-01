@@ -173,4 +173,30 @@ struct SpeakerResegmenterTests {
         // Turn 1 starts at 0s, turn 0 at 5s → turn 1's voice is group 0.
         #expect(groups(result) == [1, 0])
     }
+
+    @Test("many interleaved turns of three voices cluster into exactly three groups")
+    func clustersManyTurnsIntoThreeVoices() {
+        // Three voices on near-orthogonal axes, nine turns interleaved A,B,C,…, all
+        // fused into one diarizer slot. Exercises the incremental (Lance-Williams)
+        // average-linkage path over several merges — the result must be the same
+        // three groups, numbered by first appearance, as re-averaging every pair.
+        let axes: [[Float]] = [[1, 0, 0], [0, 1, 0], [0, 0, 1]]
+        let turns = (0 ..< 9).map { turn(0, $0, $0 + 1) }
+        // Each turn's embedding sits on its voice's axis with a little jitter, so no
+        // two turns of one voice are identical (the noisy-short-turn reality).
+        let embeddings = Dictionary(uniqueKeysWithValues: (0 ..< 9).map { index -> (Int, [Float]) in
+            var vector = axes[index % 3]
+            vector[(index / 3) % 3] += 0.02
+            return (index, vector)
+        })
+        let result = SpeakerResegmenter().resegment(
+            turns: turns,
+            embeddings: embeddings,
+            against: []
+        )
+
+        // Voice A speaks first (turn 0) → group 0, B (turn 1) → 1, C (turn 2) → 2.
+        #expect(groups(result) == [0, 1, 2, 0, 1, 2, 0, 1, 2])
+        #expect(result.speakers.count == 3)
+    }
 }

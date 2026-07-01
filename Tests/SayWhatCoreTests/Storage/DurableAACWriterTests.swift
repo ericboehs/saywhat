@@ -126,6 +126,30 @@ struct DurableAACWriterTests {
         #expect(!session.needsRecovery())
     }
 
+    /// Regression: an offline writer (`realTime: false`) must not drop frames when
+    /// the encoder falls behind. The import/reprocess path feeds far faster than real
+    /// time; the live policy of dropping the in-flight frame silently truncated
+    /// imports to ~20% of their length. The offline writer waits for the encoder
+    /// instead, so the full duration survives.
+    @Test("an offline writer preserves the whole stream under a faster-than-real-time burst")
+    func offlineBurstNotTruncated() async throws {
+        let session = try Self.makeSession()
+        defer { try? FileManager.default.removeItem(at: session.directory) }
+
+        // 20 s of audio, one 60 s segment (no rotation), appended back-to-back with no
+        // wall-clock pacing — exactly the import workload that tripped the drop.
+        let writer = try session.writer(for: .microphone, realTime: false)
+        try await Self.feed(20, into: writer)
+        try await writer.finalize()
+
+        let seg0 = session.directory.appendingPathComponent(
+            RecordingSegment(source: .microphone, index: 0).fileName
+        )
+        // Encoder priming widens tolerance a little, but truncation lost ~80%; require
+        // nearly all of the 20 s back.
+        #expect(try Self.segmentSeconds(seg0) > 19)
+    }
+
     @Test("a frame from another track is rejected")
     func trackMismatchRejected() async throws {
         let session = try Self.makeSession()

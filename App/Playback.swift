@@ -46,6 +46,18 @@ final class PlaybackController {
         isReady = composition.duration.seconds > 0
     }
 
+    /// Load a single audio file directly, so an import source can be played before
+    /// it's decoded into the session's rotating segments. The source shares the
+    /// session's 0-based timeline, so the playhead still lines up with the staged
+    /// transcript; ``load(session:)`` later swaps in the finalized mix.
+    func load(url: URL) async {
+        let asset = AVURLAsset(url: url)
+        let length = await (try? asset.load(.duration)) ?? .zero
+        player.replaceCurrentItem(with: AVPlayerItem(asset: asset))
+        duration = .seconds(length.seconds)
+        isReady = length.seconds > 0
+    }
+
     /// Advance the published playhead, and stop/rewind once it reaches the end so
     /// the play button replays from the top (no separate end notification needed).
     private func tick(_ time: CMTime) {
@@ -93,7 +105,13 @@ final class PlaybackController {
 
 /// Transport for a finished recording: play/pause, a scrubber, and timecodes.
 struct PlaybackBar: View {
-    @State var playback: PlaybackController
+    /// Injected and observed (not `@State`): the model swaps this controller when
+    /// the import source gives way to the finalized session mix, and the transport
+    /// must follow the swap — owning it in `@State` would pin the bar to the stale
+    /// source controller, so the playhead keeps moving while the highlight (which
+    /// reads `model.playback`) sits on the new one. `@Observable` makes a plain
+    /// `let` track both the swap and the controller's own published changes.
+    let playback: PlaybackController
 
     var body: some View {
         HStack(spacing: 12) {

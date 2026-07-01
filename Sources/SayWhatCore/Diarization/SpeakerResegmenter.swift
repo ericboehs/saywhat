@@ -139,42 +139,52 @@ public struct SpeakerResegmenter: Sendable {
     /// merge the two most-similar groups while their average cross-pair cosine
     /// clears the matcher threshold. Deterministic — the lowest-index best pair is
     /// merged first, so the result never depends on dictionary order.
+    ///
+    /// Cross-group cosine **sums** are kept in a matrix and updated by the
+    /// Lance-Williams recurrence — `sum(i∪j, k) = sum(i, k) + sum(j, k)`, with the
+    /// mean each comparison needs being `sum / (|i|·|j|)`. That is the identical
+    /// average-linkage result as re-averaging every pair, but the pairwise cosines
+    /// are computed once up front rather than on every merge: a long meeting where
+    /// nobody is enrolled (every turn "unknown") used to spend minutes here, frozen
+    /// at "Identifying… 100%", because each merge re-summed all O(n²) pairs.
     private func cluster(_ indices: [Int], _ embeddings: [Int: [Float]]) -> [[Int]] {
         var groups = indices.map { [$0] }
+        guard groups.count > 1 else { return groups }
         let threshold = resolver.matcher.threshold
+        var sums = groups.indices.map { left in
+            groups.indices.map { right in
+                VoiceprintMatcher.cosineSimilarity(
+                    embeddings[groups[left][0]] ?? [],
+                    embeddings[groups[right][0]] ?? []
+                )
+            }
+        }
         while groups.count > 1 {
             var bestSimilarity = -Float.greatestFiniteMagnitude
             var bestPair: (left: Int, right: Int)?
             for left in groups.indices {
                 for right in (left + 1) ..< groups.count {
-                    let similarity = averageLinkage(groups[left], groups[right], embeddings)
-                    if similarity > bestSimilarity {
-                        bestSimilarity = similarity
+                    let mean = sums[left][right] / Float(groups[left].count * groups[right].count)
+                    if mean > bestSimilarity {
+                        bestSimilarity = mean
                         bestPair = (left, right)
                     }
                 }
             }
             guard let pair = bestPair, bestSimilarity >= threshold else { break }
-            groups[pair.left].append(contentsOf: groups[pair.right])
-            groups.remove(at: pair.right)
-        }
-        return groups
-    }
-
-    /// Mean cosine similarity over every cross-group pair of turn embeddings.
-    private func averageLinkage(_ lhs: [Int], _ rhs: [Int], _ embeddings: [Int: [Float]]) -> Float {
-        var total: Float = 0
-        var count = 0
-        for x in lhs {
-            for y in rhs {
-                total += VoiceprintMatcher.cosineSimilarity(
-                    embeddings[x] ?? [],
-                    embeddings[y] ?? []
-                )
-                count += 1
+            let (left, right) = (pair.left, pair.right)
+            for other in groups.indices where other != left && other != right {
+                sums[left][other] += sums[right][other]
+                sums[other][left] = sums[left][other]
+            }
+            groups[left].append(contentsOf: groups[right])
+            groups.remove(at: right)
+            sums.remove(at: right)
+            for row in sums.indices {
+                sums[row].remove(at: right)
             }
         }
-        return count == 0 ? 0 : total / Float(count)
+        return groups
     }
 
     /// The group's medoid embedding — the member most similar to the rest (itself

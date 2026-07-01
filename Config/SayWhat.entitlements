@@ -13,5 +13,10 @@
 	     telemetry, no audio/transcript ever leaves the machine. DESIGN.md §3. -->
 	<key>com.apple.security.network.client</key>
 	<true/>
+	<!-- Read access to a file the user picks in the Debug ▸ Import Recording
+	     open panel, so an external recording can be copied into the container and
+	     transcribed for testing. Read-only: the import copies, never writes back. -->
+	<key>com.apple.security.files.user-selected.read-only</key>
+	<true/>
 </dict>
 </plist>

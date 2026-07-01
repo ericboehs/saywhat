@@ -25,10 +25,26 @@ public struct FinalPass: Sendable {
     public enum Phase: Sendable, Equatable {
         /// Re-transcribing one track's saved audio.
         case transcribing(CaptureSource)
-        /// Splitting the system track's remote speakers.
+        /// Splitting the system track into who-spoke-when (the diarizer).
         case diarizing
+        /// Embedding each turn's voice and matching it to a known person.
+        case identifying
         /// Folding both tracks into the authoritative transcript.
         case merging
+    }
+
+    /// One progress tick: the ``Phase`` underway and, when the work is countable,
+    /// how far through it we are. `fraction` is `0...1` within the *current* phase
+    /// (so the UI shows a determinate bar that refills each phase); it's `nil` at a
+    /// phase boundary and for phases too quick or opaque to meter.
+    public struct Progress: Sendable, Equatable {
+        public let phase: Phase
+        public let fraction: Double?
+
+        public init(phase: Phase, fraction: Double? = nil) {
+            self.phase = phase
+            self.fraction = fraction
+        }
     }
 
     /// Everything the pass produced: the authoritative transcript plus how each
@@ -57,6 +73,23 @@ public struct FinalPass: Sendable {
             self.transcript = transcript
             self.speakers = speakers
             self.utteranceVoiceprints = utteranceVoiceprints
+        }
+    }
+
+    /// A staged snapshot emitted *before* the pass finishes, so the UI can show the
+    /// transcript the instant text is ready and then refine it in place. The
+    /// transcript arrives first (`stage 0`, attributed only by channel — you plus one
+    /// undifferentiated remote), then again once speakers are separated (`stage 1`,
+    /// generic `Speaker N`). `stage` strictly increases; a consumer applies snapshots
+    /// in order and ignores a superseded one. The pass's returned ``Outcome`` is the
+    /// final, *named* stage and supersedes every partial.
+    public struct Partial: Sendable, Equatable {
+        public let stage: Int
+        public let outcome: Outcome
+
+        public init(stage: Int, outcome: Outcome) {
+            self.stage = stage
+            self.outcome = outcome
         }
     }
 
@@ -112,26 +145,55 @@ public struct FinalPass: Sendable {
 
     /// Produce the authoritative transcript for a finalized `session`.
     ///
-    /// - Parameter onProgress: called on the calling task as each ``Phase``
-    ///   begins, for UI narration. Optional.
+    /// - Parameters:
+    ///   - onProgress: called on the calling task as each ``Phase`` begins and
+    ///     advances, for UI narration. Optional.
+    ///   - onPartial: called with each ``Partial`` as the transcript becomes
+    ///     progressively richer — text, then separated speakers — so the UI can
+    ///     show it early and refine in place. The returned value is the final stage.
     public func run(
         _ session: RecordingSession,
-        onProgress: (@Sendable (Phase) -> Void)? = nil
+        onProgress: (@Sendable (Progress) -> Void)? = nil,
+        onPartial: (@Sendable (Partial) -> Void)? = nil
     ) async throws -> Outcome {
+        let report: @Sendable (Phase, Double?) -> Void = { phase, fraction in
+            onProgress?(Progress(phase: phase, fraction: fraction))
+        }
         let micFrames = try await collect(.microphone, in: session)
         let systemFrames = try await collect(.system, in: session)
 
-        onProgress?(.transcribing(.microphone))
-        let mic = try await transcribe(.microphone, micFrames)
+        report(.transcribing(.microphone), nil)
+        let mic = try await transcribe(.microphone, micFrames) { report(
+            .transcribing(.microphone),
+            $0
+        ) }
 
-        onProgress?(.transcribing(.system))
-        let system = try await transcribe(.system, systemFrames)
+        report(.transcribing(.system), nil)
+        let system = try await transcribe(.system, systemFrames) {
+            report(.transcribing(.system), $0)
+        }
 
-        onProgress?(.diarizing)
-        let remoteSpeakers = try await diarize(systemFrames)
+        // Stage 0: transcription — the slow part — is done. Surface the full text now
+        // (you + one undifferentiated remote) while separation and naming run on.
+        onPartial?(Partial(stage: 0, outcome: Outcome(
+            transcript: merger.merge(mic: mic, system: system, remoteSpeakers: SpeakerTimeline())
+        )))
 
-        onProgress?(.merging)
-        let resegmented = await resegment(remoteSpeakers, system: systemFrames)
+        report(.diarizing, nil)
+        let remoteSpeakers = try await diarize(systemFrames) { report(.diarizing, $0) }
+
+        // Stage 1: speakers separated but not yet named — refine to Speaker 1/2/3.
+        onPartial?(Partial(stage: 1, outcome: Outcome(
+            transcript: merger.merge(mic: mic, system: system, remoteSpeakers: remoteSpeakers)
+        )))
+
+        report(.identifying, nil)
+        let resegmented = await resegment(remoteSpeakers, system: systemFrames) { report(
+            .identifying,
+            $0
+        ) }
+
+        report(.merging, nil)
         let transcript = merger.merge(
             mic: mic,
             system: system,
@@ -211,12 +273,18 @@ public struct FinalPass: Sendable {
     /// the diarizer's timeline passes through unchanged.
     private func resegment(
         _ timeline: SpeakerTimeline,
-        system frames: [AudioFrame]
+        system frames: [AudioFrame],
+        onProgress: (@Sendable (Double) -> Void)? = nil
     ) async -> (resegmentation: SpeakerResegmenter.Resegmentation, embeddings: [Int: [Float]]) {
         let passthrough = SpeakerResegmenter.Resegmentation(timeline: timeline, speakers: [:])
         guard let store, let embedder else { return (passthrough, [:]) }
         guard let directory = try? store.enrolledPersons() else { return (passthrough, [:]) }
-        let embeddings = await turnEmbeddings(timeline, system: frames, using: embedder)
+        let embeddings = await turnEmbeddings(
+            timeline,
+            system: frames,
+            using: embedder,
+            onProgress: onProgress
+        )
         let resegmentation = resegmenter.resegment(
             turns: timeline.turns,
             embeddings: embeddings,
@@ -231,10 +299,15 @@ public struct FinalPass: Sendable {
     private func turnEmbeddings(
         _ timeline: SpeakerTimeline,
         system frames: [AudioFrame],
-        using embedder: any SpeakerEmbedder
+        using embedder: any SpeakerEmbedder,
+        onProgress: (@Sendable (Double) -> Void)? = nil
     ) async -> [Int: [Float]] {
         var embeddings: [Int: [Float]] = [:]
+        let total = timeline.turns.count
         for (index, turn) in timeline.turns.enumerated() {
+            // Embedding dominates the identify step; report by turns walked (on every
+            // exit) so the bar advances even across short turns we skip.
+            defer { if total > 0 { onProgress?(Double(index + 1) / Double(total)) } }
             let samples = SpeakerAudio.samples(for: turn, from: frames)
             guard samples.count >= Self.minIdentitySamples else { continue }
             if let vector = try? await embedder.embedding(for: samples) {
@@ -261,10 +334,12 @@ public struct FinalPass: Sendable {
     /// hanging the pass.
     private func transcribe(
         _ source: CaptureSource,
-        _ frames: [AudioFrame]
+        _ frames: [AudioFrame],
+        onProgress: (@Sendable (Double) -> Void)? = nil
     ) async throws -> [TranscriptSegment] {
         guard !frames.isEmpty else { return [] }
         let make = makeTranscriber
+        let total = Self.duration(of: frames).seconds
         return try await withTimeout(
             budget(Self.duration(of: frames)),
             label: "transcribe(\(source))"
@@ -272,6 +347,9 @@ public struct FinalPass: Sendable {
             var segments: [TranscriptSegment] = []
             for try await segment in try await make(source).transcribe(Self.stream(frames)) {
                 segments.append(segment)
+                // Fraction by how far the latest segment reaches into the track —
+                // the recognizer advances monotonically through the audio.
+                if total > 0 { onProgress?(min(1, segment.end.seconds / total)) }
             }
             return segments
         }
@@ -279,13 +357,22 @@ public struct FinalPass: Sendable {
 
     /// Diarize the system track into its final remote-speaker timeline (the last
     /// snapshot the diarizer emits) under the watchdog; an empty track yields none.
-    private func diarize(_ frames: [AudioFrame]) async throws -> SpeakerTimeline {
+    private func diarize(
+        _ frames: [AudioFrame],
+        onProgress: (@Sendable (Double) -> Void)? = nil
+    ) async throws -> SpeakerTimeline {
         guard !frames.isEmpty else { return SpeakerTimeline() }
         let diarizer = diarizer
+        let total = Self.duration(of: frames).seconds
         return try await withTimeout(budget(Self.duration(of: frames)), label: "diarize") {
             var timeline = SpeakerTimeline()
             for await snapshot in try await diarizer.diarize(Self.stream(frames)) {
                 timeline = snapshot
+                // Each snapshot is the full timeline so far; its last turn's end is
+                // how far into the audio the diarizer has reached.
+                if total > 0, let reached = snapshot.turns.last?.range.upperBound.seconds {
+                    onProgress?(min(1, reached / total))
+                }
             }
             return timeline
         }

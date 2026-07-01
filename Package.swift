@@ -17,6 +17,12 @@ let package = Package(
     ],
     products: [
         .library(name: "SayWhatCore", targets: ["SayWhatCore"]),
+        // Dev/benchmark tooling. A command-line frontend over the same core the app
+        // uses — runs the pipeline over a file and emits the shared JSONL transcript,
+        // and scores it against a ground-truth reference (WER / DER / boundaries).
+        // It is *never* linked into the app; the on-device invariant is unaffected
+        // (any cloud reference adapter lives here, behind an explicit opt-in).
+        .executable(name: "saywhat", targets: ["saywhat"]),
     ],
     dependencies: [
         // Live + final diarization (Sortformer / pyannote) and batch Parakeet
@@ -48,6 +54,27 @@ let package = Package(
         .testTarget(
             name: "SayWhatCoreTests",
             dependencies: ["SayWhatCore"],
+            swiftSettings: swiftSettings
+        ),
+        // Pure benchmark metrics — WER, DER + cluster consistency, boundary accuracy
+        // — over two transcripts (a hypothesis and a ground-truth reference). No
+        // models, no I/O, no network: fully unit-tested like the rest of the core.
+        .target(
+            name: "SayWhatBench",
+            dependencies: ["SayWhatCore"],
+            swiftSettings: swiftSettings
+        ),
+        .testTarget(
+            name: "SayWhatBenchTests",
+            dependencies: ["SayWhatBench", "SayWhatCore"],
+            swiftSettings: swiftSettings
+        ),
+        // The CLI itself: argument parsing + wiring the real engines (Parakeet /
+        // Sortformer / WeSpeaker, all CoreML — no MLX, so it builds under plain
+        // `swift build`) to the JSONL emitter and the benchmark scorer.
+        .executableTarget(
+            name: "saywhat",
+            dependencies: ["SayWhatCore", "SayWhatBench"],
             swiftSettings: swiftSettings
         ),
     ]

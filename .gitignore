@@ -34,6 +34,11 @@ Recordings/
 *.wav
 *.caf
 
+# Local benchmark fixtures: real meeting audio + ground-truth transcripts. The
+# tooling (README, the saywhat CLI) is committed; the fixtures never are.
+/Benchmarks/*
+!/Benchmarks/README.md
+
 # Secrets
 .env
 *.p8
