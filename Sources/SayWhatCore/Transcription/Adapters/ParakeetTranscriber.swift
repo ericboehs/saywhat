@@ -35,6 +35,10 @@ public final class ParakeetTranscriber: Transcriber {
     /// Shapes the model's token timings into readable, timeline-placed segments.
     private let builder: ParakeetSegmentBuilder
 
+    /// Splits the track into silence-cut, ≤-cap windows so no clause is lost on
+    /// one of FluidAudio's internal chunk seams (see ``AudioWindower``).
+    private let windower: AudioWindower
+
     public init(
         source: CaptureSource,
         models: AsrModels? = nil,
@@ -43,6 +47,7 @@ public final class ParakeetTranscriber: Transcriber {
         self.source = source
         self.models = models
         builder = ParakeetSegmentBuilder(source: source, utterancePause: utterancePause)
+        windower = AudioWindower()
     }
 
     public func transcribe(
@@ -50,6 +55,7 @@ public final class ParakeetTranscriber: Transcriber {
     ) async throws -> AsyncThrowingStream<TranscriptSegment, Error> {
         let models = try await loadedModels()
         let builder = builder
+        let windower = windower
 
         return AsyncThrowingStream<TranscriptSegment, Error> { continuation in
             let task = Task {
@@ -81,20 +87,38 @@ public final class ParakeetTranscriber: Transcriber {
                         config: ASRConfig(melChunkContext: false),
                         models: models
                     )
-                    var state = try TdtDecoderState()
-                    let result = try await manager.transcribe(samples, decoderState: &state)
 
-                    let tokens = (result.tokenTimings ?? []).map {
-                        TimedToken(
-                            text: $0.token,
-                            start: .seconds($0.startTime),
-                            end: .seconds($0.endTime)
-                        )
+                    // Split the track into ≤-cap windows cut in silence, so no
+                    // clause straddles one of FluidAudio's internal ~15 s seams —
+                    // where #594 still drops it even with the no-mel path. Each
+                    // window is short enough to take FluidAudio's single-window
+                    // path (no cross-window dedup), and the cuts land in pauses
+                    // where there is no word to lose. We transcribe each window
+                    // independently and shift its token timings back onto the
+                    // track timeline by the window's start offset.
+                    let sampleRate = Double(AudioStreamFormat.model.sampleRate)
+                    var tokens: [TimedToken] = []
+                    var fallbackText = ""
+                    for window in windower.windows(samples) {
+                        let piece = Array(samples[window])
+                        var state = try TdtDecoderState()
+                        let result = try await manager.transcribe(piece, decoderState: &state)
+                        let offset = Duration.seconds(Double(window.lowerBound) / sampleRate)
+                        tokens.append(contentsOf: (result.tokenTimings ?? []).map {
+                            TimedToken(
+                                text: $0.token,
+                                start: offset + .seconds($0.startTime),
+                                end: offset + .seconds($0.endTime)
+                            )
+                        })
+                        if !result.text.isEmpty {
+                            fallbackText += fallbackText.isEmpty ? result.text : " " + result.text
+                        }
                     }
                     let segments = builder.segments(
                         tokens: tokens,
-                        fallbackText: result.text,
-                        fallbackDuration: .seconds(result.duration),
+                        fallbackText: fallbackText,
+                        fallbackDuration: .seconds(Double(samples.count) / sampleRate),
                         base: base ?? .zero
                     )
                     for segment in segments {
