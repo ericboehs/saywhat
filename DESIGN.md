@@ -250,6 +250,12 @@ choice.
   thereafter they're auto-labeled in every future meeting.
 - The mic track auto-enrolls **you** (it's always you), so the owner is named
   from day one.
+- **Calendar as a naming prior:** when a session is matched to a calendar event
+  (read-only EventKit — the documented on-device exception), the attendee list
+  turns open-set naming into a constrained assignment: unknown voiceprints get
+  one-tap name suggestions from the not-yet-matched attendees, and a `Person`
+  linked to an attendee email is pre-matched in future meetings from the invite
+  alone, before they even speak.
 
 **Streaming-diarization caps:** Sortformer handles ≤4 speakers per window, live
 and in the final pass. Beyond that, identity re-segmentation recovers more
@@ -350,6 +356,20 @@ clean, a `FireworksSummarizer` / `ClaudeSummarizer` (OpenAI-compatible
 premium summary. We design against the chat-completions shape so this stays
 trivial; we just don't ship or default to it.
 
+### 8.5 Live intelligence (in-meeting brief)
+
+The "runs once, at the end" rule has one deliberate exception: a **`LiveAnalyst`**
+that consumes finalized live transcript *text* during the meeting (never audio,
+never volatile text) and maintains a rolling brief — next steps, open questions,
+suggested questions, and drafted answers to questions asked of you (the
+mic/system split makes "addressed to me" a free signal). It's a **fold**, not
+map-reduce: each pass feeds *(previous brief + transcript delta)* through Apple
+FM guided generation, so the prompt stays bounded at 4096 tokens for any meeting
+length and runs on the ANE alongside the live pipeline. It's a separate small
+protocol from `Summarizer` (stateful fold vs one-shot), and its brief is
+provisional — the authoritative `MeetingNotes` still come from the final-pass
+summarizer. Full spec: [docs/live-intelligence.md](docs/live-intelligence.md).
+
 ---
 
 ## 9. Storage & retention
@@ -413,6 +433,15 @@ a core requirement:
 - **Live transcript view:** speaker-colored, auto-scrolling, volatile text
   shown lighter and committed on finalize; word-level highlight via
   `audioTimeRange`.
+- **Live in-meeting search:** ⌘F over the current meeting's transcript
+  (finalized + volatile — it's all in memory; a linear scan needs no index).
+  Hits show speaker + timestamp, Enter/⇧Enter cycles, and matches keep updating
+  as new segments finalize. Cross-meeting search is a later, separate piece
+  (GRDB FTS5 populated by the final pass).
+- **Live brief sidebar:** the `LiveAnalyst`'s rolling sections — next steps,
+  open questions, suggested questions, "asked of you" answer drafts — with
+  pin/dismiss and tap-to-seek. See §8.5 and
+  [docs/live-intelligence.md](docs/live-intelligence.md).
 - **Session list / detail:** browse past meetings, read transcript, view
   summary, play back audio synced to transcript.
 - **Settings:** capture mode (video/in-person), summarizer model dropdown
@@ -438,8 +467,11 @@ Commenters expect **Apple to ship native on-device meeting transcription within
 workflow and ownership:
 
 - Persistent speaker identity across meetings.
+- The live brief: real-time next steps / open questions / suggested answers,
+  fully on-device (§8.5) — cloud competitors do this; nobody does it locally.
 - Mid-meeting "flag this moment."
-- Calendar-named sessions; append-to-existing for recurring meetings.
+- Calendar-named sessions with attendee→speaker mapping (§6);
+  append-to-existing for recurring meetings.
 - Local, private, owned — no subscription, no cloud.
 - (Later) RAG / search over your entire meeting history.
 
@@ -467,17 +499,22 @@ workflow and ownership:
 - **Phase 0 — Capture & durability. ✓ Done.** SwiftUI scaffold; dual-track
   capture (mic + system) → continuous AAC to disk. Crash-safe recording proven
   end to end; local dev builds signed/sandboxed via a self-signed cert.
-- **Phase 1 — Live transcript.** Apple SpeechTranscriber per track, on screen,
-  volatile→final. The thing you want to *read*.
-- **Phase 2 — Live diarization + enrollment.** FluidAudio Sortformer labels +
-  `SpeakerManager` persistent identity.
-- **Phase 3 — Final pass.** Parakeet TDT v3 batch + Sortformer batch diarization,
-  merged into the authoritative transcript; `wespeaker_v2` identity resolution.
-- **Phase 4 — Summaries.** `Summarizer` protocol → MLX (Gemma default) one-pass
+- **Phase 1 — Live transcript. ✓ Done.** Apple SpeechTranscriber per track, on
+  screen, volatile→final. The thing you want to *read*.
+- **Phase 2 — Live diarization + enrollment. ✓ Done.** FluidAudio Sortformer
+  labels + persistent voiceprint identity (naming, exemplars, live correction).
+- **Phase 3 — Final pass. ✓ Done.** Parakeet TDT v3 batch + Sortformer batch
+  diarization + identity re-segmentation, merged into the authoritative
+  transcript; `wespeaker_v2` identity resolution.
+- **Phase 4 — Live intelligence (current focus).** In order: live in-meeting
+  ⌘F search (§11) → calendar integration + attendee→speaker mapping (§6) → the
+  `LiveAnalyst` rolling brief (§8.5,
+  [docs/live-intelligence.md](docs/live-intelligence.md)).
+- **Phase 5 — Summaries.** `Summarizer` protocol → MLX (Gemma default) one-pass
   + Apple FM map-reduce fallback; two-prompt strategy.
 - **Throughout** — retention policy, settings, the "flag this moment" hotkey,
-  and the benchmark harness carried from earl-scribe (WER + diarization
-  consistency + ±500 ms boundary accuracy).
+  and the benchmark harness (✓ carried forward: `saywhat` CLI + `SayWhatBench`,
+  WER + diarization consistency scoring).
 
 ---
 
