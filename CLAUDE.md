@@ -142,17 +142,18 @@ DESIGN.md  QUALITY.md  CLAUDE.md
 
 ## Status
 
-**Phase 0 (capture & durability) complete.** Docs + tooling/CI, the capture
-domain model + crash-safe durability core, both capture adapters (`AVAudioEngine`
-mic + `ScreenCaptureKit` system audio), the `AVAssetWriter`-backed durable AAC
-writer with rotating segments + crash recovery, a live input-level meter, and a
-minimal SwiftUI app target (committed vanilla `SayWhat.xcodeproj`) have landed. A
-Record press now produces a recoverable, **dual-track** recording on disk —
-verified end to end. Local dev builds are signed with a self-signed cert (wired
-via a gitignored `Config/Local.xcconfig`) so the App Sandbox is enforced and
-recordings land in the app container; see `Config/Local.xcconfig.example`.
+**Phases 0–3 complete.** Dual-track crash-safe capture, the live transcript
+(Apple `SpeechTranscriber` per track, volatile→final), live diarization with
+persistent voiceprint identity (naming, exemplars, live correction,
+re-segmentation), and the final pass (Parakeet TDT v3 + Sortformer batch +
+`wespeaker_v2` identity) all work end to end, plus playback with word-level
+highlighting, export, and the `saywhat` benchmark CLI. Local dev builds are
+signed with a self-signed cert (wired via a gitignored `Config/Local.xcconfig`)
+so the App Sandbox is enforced and recordings land in the app container; see
+`Config/Local.xcconfig.example`.
 
-**Phase 1 (live transcript) is next** — the `Transcriber` protocol + Apple
-`SpeechTranscriber` per track, volatile→final, on screen. See
-[CHANGELOG.md](CHANGELOG.md) for what's shipped and DESIGN.md §14 for the build
-order.
+**Phase 4 (live intelligence) is next** — live in-meeting ⌘F search, calendar
+integration with attendee→speaker mapping, and the `LiveAnalyst` rolling brief
+(see [docs/live-intelligence.md](docs/live-intelligence.md)). Summaries are
+Phase 5. See [CHANGELOG.md](CHANGELOG.md) for what's shipped and DESIGN.md §14
+for the build order.
