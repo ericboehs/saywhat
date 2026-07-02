@@ -1,3 +1,4 @@
+import SayWhatCore
 import SwiftUI
 
 /// Keys and defaults for user settings, shared between the ``SettingsView`` that
@@ -14,6 +15,13 @@ enum AppSettings {
     /// slot and voiceprint match score, the live namer's running matches, and a
     /// voiceprint-directory inspector. Off by default; toggled from the Debug menu.
     static let showDebugInfoKey = "showDebugInfo"
+
+    /// Whether a new recording looks up the calendar event it belongs to —
+    /// titling the session and offering the invite's attendees as speaker-name
+    /// suggestions. Off by default: it prompts for calendar access, and the
+    /// (strictly local, read-only) lookup is the documented exception to
+    /// "no lookups" in the on-device posture (DESIGN.md §6).
+    static let calendarEnabledKey = "calendarLookupEnabled"
 
     /// The cosine-similarity threshold the current fuzziness maps to. Higher
     /// fuzziness loosens matching (a lower threshold), so one person's varied
@@ -38,9 +46,38 @@ private extension Comparable {
 /// more controls land here as the pipelines grow user-facing knobs.
 struct SettingsView: View {
     @AppStorage(AppSettings.fuzzinessKey) private var fuzziness = AppSettings.defaultFuzziness
+    @AppStorage(AppSettings.calendarEnabledKey) private var calendarEnabled = false
 
     var body: some View {
         Form {
+            Section {
+                VStack(alignment: .leading, spacing: 4) {
+                    Toggle("Match recordings to calendar events", isOn: $calendarEnabled)
+                    Text(
+                        """
+                        Titles each recording with the meeting on your calendar \
+                        and offers its attendees as name suggestions when \
+                        labeling speakers. Read-only, and the lookup never \
+                        leaves this Mac.
+                        """
+                    )
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                }
+            } header: {
+                Text("Calendar")
+            }
+            .onChange(of: calendarEnabled) { _, enabled in
+                guard enabled else { return }
+                // Turning it on asks for calendar access; a denial flips the
+                // toggle back so the setting never silently does nothing.
+                Task {
+                    if await EventKitCalendarAdapter().requestAccess() == false {
+                        calendarEnabled = false
+                    }
+                }
+            }
+
             Section {
                 VStack(alignment: .leading, spacing: 4) {
                     Slider(value: $fuzziness, in: 0 ... 1, step: 0.05) {

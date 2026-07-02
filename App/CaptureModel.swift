@@ -81,6 +81,12 @@ final class CaptureModel {
     /// recording's, or a past one reopened from the sidebar; `nil` before any.
     var selectedSessionID: String?
 
+    /// The calendar event the open session was matched to (title + attendee
+    /// roster), when the calendar lookup is enabled and found one; `nil`
+    /// otherwise. Set shortly after a recording starts, reloaded with a reopened
+    /// session from its saved `meeting.json`.
+    var meeting: MeetingEvent?
+
     var sessionPath: String?
     var errorMessage: String?
 
@@ -90,6 +96,13 @@ final class CaptureModel {
     private let systemTranscriber = AppleSpeechTranscriber(source: .system)
     private let diarizer: any Diarizer = SortformerLiveDiarizer()
     private var recording: Task<Void, Never>?
+
+    /// The read-only calendar lookup behind auto-titling and attendee
+    /// suggestions — the documented on-device exception (DESIGN.md §6). Only
+    /// consulted when the Settings toggle enables it. Read by the calendar
+    /// extension (``CaptureModel/attachMeeting(to:)``), so module-internal
+    /// rather than private.
+    let calendar: any CalendarProvider = EventKitCalendarAdapter()
 
     /// Diarization for the final pass: turns from Sortformer (it splits the remote
     /// speakers cleanly, where the dropped offline pyannote pass glued them
@@ -169,6 +182,7 @@ final class CaptureModel {
         // The live recording isn't a saved session yet; clear any reopened one so
         // the detail pane follows the recording until it finalizes.
         selectedSessionID = nil
+        meeting = nil
         utteranceVoiceprints = [:]
         transcriptStore = nil
         remoteSpeakers = SpeakerTimeline()
@@ -219,6 +233,7 @@ final class CaptureModel {
                 // tracks are captured, metered, stored, and fanned to their
                 // recognizers. Each loop ends when its source finishes.
                 await withTaskGroup(of: Void.self) { group in
+                    group.addTask { await self.attachMeeting(to: session) }
                     group.addTask { await self.transcribe(micAudio, source: .microphone) }
                     group.addTask { await self.transcribe(systemAudio, source: .system) }
                     group.addTask { await self.diarizeRemote(remoteAudio) }
@@ -305,35 +320,6 @@ final class CaptureModel {
         finalizeStatus = nil
         finalizeProgress = nil
         finalizePhase = nil
-    }
-
-    /// Whether the open recording can be reprocessed: one is selected and we're
-    /// idle (not recording, not already mid-finalize).
-    var canReprocess: Bool {
-        selectedSessionID != nil && !isRecording && finalizeStatus == nil
-    }
-
-    /// Re-run the final pass over the selected recording's saved audio, replacing
-    /// its transcript — for when a model improved, or after enrolling/merging
-    /// voiceprints so identities re-resolve cleanly. Because naming is persisted as
-    /// voiceprints, prior names carry into the new transcript; manual per-segment
-    /// reassignments that weren't voiceprint-backed are not preserved. The durable
-    /// audio is never touched. A no-op unless ``canReprocess``.
-    func reprocessSelected() {
-        guard canReprocess, let id = selectedSessionID,
-              let session = sessions.first(where: { $0.id == id }) else { return }
-        Task { await runFinalPass(RecordingSession(directory: session.directory)) }
-    }
-
-    /// A reader-facing description of a final-pass stage.
-    static func describe(_ phase: FinalPass.Phase) -> String {
-        switch phase {
-        case .transcribing(.microphone): "Transcribing your audio…"
-        case .transcribing(.system): "Transcribing the meeting…"
-        case .diarizing: "Separating speakers…"
-        case .identifying: "Identifying speakers…"
-        case .merging: "Assembling transcript…"
-        }
     }
 
     private func stop() {

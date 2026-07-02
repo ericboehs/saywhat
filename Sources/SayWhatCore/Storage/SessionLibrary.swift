@@ -11,14 +11,18 @@ public struct RecordedSession: Sendable, Identifiable, Equatable {
     public let directory: URL
     /// When the recording started, decoded from the `session-<unixSeconds>` name.
     public let date: Date
+    /// The matched calendar event's title, from the session's saved
+    /// `meeting.json`; `nil` (no calendar match) falls back to the date.
+    public let title: String?
     /// Whether an editable ``SessionTranscript`` was saved: reopening loads it for
     /// editing; without it the session offers playback only.
     public let hasTranscript: Bool
 
-    public init(id: String, directory: URL, date: Date, hasTranscript: Bool) {
+    public init(id: String, directory: URL, date: Date, title: String? = nil, hasTranscript: Bool) {
         self.id = id
         self.directory = directory
         self.date = date
+        self.title = title
         self.hasTranscript = hasTranscript
     }
 }
@@ -50,6 +54,7 @@ public enum SessionLibrary {
                 id: name,
                 directory: directory,
                 date: date,
+                title: MeetingStore(directory: directory).load()?.title,
                 hasTranscript: hasTranscript
             )
         }

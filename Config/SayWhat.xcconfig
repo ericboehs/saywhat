@@ -29,6 +29,7 @@ SWIFT_EMIT_LOC_STRINGS = YES
 GENERATE_INFOPLIST_FILE = YES
 INFOPLIST_KEY_NSMicrophoneUsageDescription = Say What records your microphone to transcribe meetings on-device. Audio never leaves your Mac.
 INFOPLIST_KEY_NSSpeechRecognitionUsageDescription = Say What transcribes your meetings on-device. Speech is processed locally and never leaves your Mac.
+INFOPLIST_KEY_NSCalendarsFullAccessUsageDescription = Say What matches each recording to the meeting on your calendar, for titles and attendee name suggestions. Read-only; calendar data never leaves your Mac.
 INFOPLIST_KEY_LSApplicationCategoryType = public.app-category.productivity
 INFOPLIST_KEY_NSHumanReadableCopyright = MIT-licensed. On-device only.
 
