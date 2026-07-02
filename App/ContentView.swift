@@ -137,16 +137,17 @@ private struct DetailPane: View {
                     TrackRow(title: "Microphone", level: model.micLevel, active: true)
                     TrackRow(title: "System audio", level: model.systemLevel, active: true)
                 }
-                if findPresented {
-                    FindBar(
-                        query: $findQuery,
-                        search: search,
-                        focusToken: findFocusToken,
-                        onNext: { search.next() },
-                        onPrevious: { search.previous() },
-                        onClose: closeFind
-                    )
-                }
+            }
+
+            if findPresented {
+                FindBar(
+                    query: $findQuery,
+                    search: search,
+                    focusToken: findFocusToken,
+                    onNext: { search.next() },
+                    onPrevious: { search.previous() },
+                    onClose: closeFind
+                )
             }
 
             // Once the transcript is on screen, the remaining stages (separating,
@@ -179,21 +180,27 @@ private struct DetailPane: View {
         }
         .padding(40)
         .frame(minWidth: 480, minHeight: 540)
-        // Expose Find to the Edit menu (⌘F / ⌘G / ⇧⌘G); only a live meeting has
-        // a Find surface — the final transcript gets search with the library.
+        // Expose Find to the Edit menu (⌘F / ⌘G / ⇧⌘G) whenever there is a
+        // transcript to search — the live one while recording, or a reopened
+        // session's final transcript.
         .focusedSceneValue(\.find, FindAction(
-            isAvailable: model.isRecording,
+            isAvailable: model.isRecording || model.finalTranscript != nil,
             find: presentFind,
             next: { search.next() },
             previous: { search.previous() }
         ))
         .onChange(of: findQuery) { refreshSearch() }
-        // The live transcript grows underneath an open Find bar; re-match so
-        // new speech joins the hit list (the selection sticks to its hit).
+        // The searched transcript changes underneath an open Find bar — the live
+        // one grows, the final one refines in place during the staged pass —
+        // so re-match (the selection sticks to its hit).
         .onChange(of: model.transcript) { if findPresented { refreshSearch() } }
+        .onChange(of: model.finalTranscript) { if findPresented { refreshSearch() } }
+        // Stopping swaps the searched text wholesale (live → final entries don't
+        // correspond), and another session is another meeting: start Find fresh.
         .onChange(of: model.isRecording) { _, recording in
             if !recording { closeFind() }
         }
+        .onChange(of: model.selectedSessionID) { closeFind() }
     }
 
     /// Open the Find bar, or pull focus back to its field when already open.
@@ -212,7 +219,10 @@ private struct DetailPane: View {
     }
 
     private func refreshSearch() {
-        search.update(query: findQuery, texts: model.transcript.searchTexts)
+        let texts = model.isRecording
+            ? model.transcript.searchTexts
+            : model.finalTranscript?.searchTexts ?? []
+        search.update(query: findQuery, texts: texts)
     }
 
     /// The main panel: a live transcript while recording, the editable final
@@ -264,7 +274,8 @@ private struct DetailPane: View {
                 onSeek: { model.playback?.seek(to: $0) },
                 onRename: { slot, name in model.renameSpeaker(slot: slot, to: name) },
                 onReassign: { id, name in model.reassignUtterance(id: id, to: name) },
-                debugLine: showDebug ? { model.debugLine(for: $0) } : nil
+                debugLine: showDebug ? { model.debugLine(for: $0) } : nil,
+                search: findPresented ? search : nil
             )
             playbackBar
         }

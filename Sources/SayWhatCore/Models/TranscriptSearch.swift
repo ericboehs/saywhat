@@ -16,6 +16,21 @@ public struct TranscriptSearchHit: Sendable, Equatable {
     }
 }
 
+public extension Transcript {
+    /// The transcript as the flat text list ``TranscriptSearchState`` matches
+    /// over, one entry per utterance in timeline order. When an utterance has
+    /// word timings the entry is the words joined by single spaces — exactly
+    /// the text the final view renders (word by word, for playback
+    /// highlighting) — so hit offsets land on the rendered characters.
+    var searchTexts: [String] {
+        utterances.map { utterance in
+            utterance.words.isEmpty
+                ? utterance.text
+                : utterance.words.map(\.text).joined(separator: " ")
+        }
+    }
+}
+
 /// Find-in-transcript over the *current* meeting (DESIGN.md §11): the hit list
 /// for a query across an ordered list of texts, plus the Find-bar selection —
 /// which hit is current, with wraparound next/previous.

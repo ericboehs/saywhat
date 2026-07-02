@@ -2,9 +2,10 @@ import SayWhatCore
 import SwiftUI
 
 /// The in-meeting Find bar (DESIGN.md §11): a query field with the "3 of 12"
-/// position, previous/next arrows, and a close button. Shown above the live
-/// transcript while recording; matching itself lives in
-/// ``TranscriptSearchState`` (SayWhatCore) — this view just binds to it.
+/// position, previous/next arrows, and a close button. Shown above the
+/// transcript — live while recording, final for a reopened session; matching
+/// itself lives in ``TranscriptSearchState`` (SayWhatCore) — this view just
+/// binds to it.
 struct FindBar: View {
     @Binding var query: String
     /// The current hit list and selection, owned by the pane that also feeds
@@ -61,8 +62,8 @@ struct FindBar: View {
 
 /// An action the Find menu invokes on the focused scene: open the Find bar (⌘F)
 /// or step the selection (⌘G / ⇧⌘G). `isAvailable` gates the menu items to a
-/// live meeting. Bridged from the pane via `focusedSceneValue`, matching
-/// ``ReprocessAction``.
+/// meeting with a searchable transcript (live or final). Bridged from the pane
+/// via `focusedSceneValue`, matching ``ReprocessAction``.
 struct FindAction: Equatable {
     let isAvailable: Bool
     let find: () -> Void

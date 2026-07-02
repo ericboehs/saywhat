@@ -144,4 +144,31 @@ struct TranscriptSearchTests {
             TranscriptSearchHit(entry: 0, offsets: 2 ..< 4),
         ])
     }
+
+    @Test("a final transcript searches the rendered text: word runs when timed")
+    func finalTranscriptSearchTexts() {
+        // With word timings the view renders the words joined by spaces, not
+        // `text` — searchTexts must match that rendering so offsets line up.
+        let transcript = Transcript(utterances: [
+            Transcript.Utterance(
+                id: 0,
+                speaker: .you,
+                text: "OK — ship it.",
+                range: .seconds(0) ..< .seconds(2),
+                words: [
+                    WordTiming(text: "OK", range: .seconds(0) ..< .seconds(1)),
+                    WordTiming(text: "ship", range: .seconds(1) ..< .seconds(1.5)),
+                    WordTiming(text: "it.", range: .seconds(1.5) ..< .seconds(2)),
+                ]
+            ),
+            Transcript.Utterance(
+                id: 1,
+                speaker: .remote(0),
+                text: "Sounds good.",
+                range: .seconds(2) ..< .seconds(3)
+            ),
+        ])
+
+        #expect(transcript.searchTexts == ["OK ship it.", "Sounds good."])
+    }
 }

@@ -257,7 +257,7 @@ struct SpeakerBlock: View {
     /// link runs make words clickable without splitting them into separate views
     /// (which would defeat wrapping).
     private var content: Text {
-        guard !words.isEmpty else { return Text(searchHighlighted) }
+        guard !words.isEmpty else { return Text(searchHighlighted(AttributedString(text))) }
         var attributed = AttributedString()
         for (index, word) in words.enumerated() {
             if index > 0 { attributed += AttributedString(" ") }
@@ -274,15 +274,18 @@ struct SpeakerBlock: View {
             }
             attributed += run
         }
-        return Text(attributed)
+        return Text(searchHighlighted(attributed))
     }
 
-    /// The plain-text path with Find matches washed in yellow, the selected one
+    /// Wash Find matches into the rendered text in yellow, the selected one
     /// stronger. Character offsets come from ``TranscriptSearchState`` over the
-    /// same text this block renders; out-of-bounds ranges (a volatile guess
-    /// revised mid-update) are skipped rather than clamped.
-    private var searchHighlighted: AttributedString {
-        var attributed = AttributedString(text)
+    /// same text this block renders — plain `text`, or the word runs joined by
+    /// spaces (see ``Transcript/searchTexts``) — so they apply to either path.
+    /// Out-of-bounds ranges (a volatile guess revised mid-update) are skipped
+    /// rather than clamped. A search wash beats the playhead's on overlap; the
+    /// match is what the reader asked to see.
+    private func searchHighlighted(_ base: AttributedString) -> AttributedString {
+        var attributed = base
         for range in highlights {
             let characters = attributed.characters
             guard range.lowerBound >= 0, range.upperBound <= characters.count else { continue }
@@ -420,6 +423,10 @@ struct FinalTranscriptView: View {
     var onReassign: ((Int, String) -> Void)?
     /// Per-utterance diagnostic line for the Debug overlay; `nil` (off) shows none.
     var debugLine: ((Transcript.Utterance) -> String?)?
+    /// The Find bar's matches over this transcript; `nil` (Find closed) shows no
+    /// highlights. Entry indexes are utterance positions, mirroring
+    /// ``Transcript/searchTexts``.
+    var search: TranscriptSearchState?
 
     var body: some View {
         ScrollViewReader { proxy in
@@ -429,7 +436,10 @@ struct FinalTranscriptView: View {
                         Text("No speech detected.")
                             .foregroundStyle(.tertiary)
                     } else {
-                        ForEach(transcript.utterances) { utterance in
+                        ForEach(
+                            Array(transcript.utterances.enumerated()),
+                            id: \.element.id
+                        ) { entry, utterance in
                             SpeakerBlock(
                                 label: utterance.speaker,
                                 text: utterance.text,
@@ -441,7 +451,9 @@ struct FinalTranscriptView: View {
                                 onSeek: onSeek,
                                 onRename: renameHandler(for: utterance.speaker),
                                 onReassign: reassignHandler(for: utterance),
-                                debugLine: debugLine?(utterance)
+                                debugLine: debugLine?(utterance),
+                                highlights: search?.offsets(inEntry: entry) ?? [],
+                                activeHighlight: activeHighlight(entry: entry)
                             )
                             .id(utterance.id)
                         }
@@ -450,12 +462,25 @@ struct FinalTranscriptView: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
             // Follow the playhead, but only when it moves to a new turn — scrolling
-            // on every word would fight the reader and never settle.
+            // on every word would fight the reader and never settle. While Find is
+            // open the match owns the scroll position instead.
             .onChange(of: cursor?.utteranceID) { _, utteranceID in
-                guard let utteranceID else { return }
+                guard search == nil, let utteranceID else { return }
                 withAnimation { proxy.scrollTo(utteranceID, anchor: .center) }
             }
+            .onChange(of: search?.currentHit, initial: true) { _, hit in
+                guard let hit, hit.entry < transcript.utterances.count else { return }
+                withAnimation {
+                    proxy.scrollTo(transcript.utterances[hit.entry].id, anchor: .center)
+                }
+            }
         }
+    }
+
+    /// The selected match's range when it lands in `entry`; `nil` otherwise.
+    private func activeHighlight(entry: Int) -> Range<Int>? {
+        guard let hit = search?.currentHit, hit.entry == entry else { return nil }
+        return hit.offsets
     }
 
     /// A per-block rename closure: only remote speakers carry a voiceprint, so
