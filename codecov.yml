@@ -32,5 +32,6 @@ ignore:
   - "**/Capture/Adapters/**"      # AVAudioEngine / ScreenCaptureKit hardware adapters
   - "**/Transcription/Adapters/**" # SpeechAnalyzer / on-device ASR model adapters
   - "**/Diarization/Adapters/**"  # FluidAudio Sortformer / pyannote model adapters
+  - "**/Summarization/Adapters/**" # Apple Foundation Models / MLX engine adapters
   - "**/*Adapter.swift"
   - "**/*.generated.swift"
