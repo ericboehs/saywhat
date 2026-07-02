@@ -16,9 +16,16 @@ public struct Person: Sendable, Equatable, Hashable, Codable, Identifiable {
     /// Display name shown in the transcript (e.g. "Eric").
     public var name: String
 
-    public init(id: UUID = UUID(), name: String) {
+    /// The calendar-attendee email this person was named from, when known — the
+    /// link that lets a future meeting's invite roster pre-match its attendees
+    /// to enrolled voices (DESIGN.md §6). `nil` for people never tied to an
+    /// invite; absent in older documents, which decode as `nil`.
+    public var email: String?
+
+    public init(id: UUID = UUID(), name: String, email: String? = nil) {
         self.id = id
         self.name = name
+        self.email = email
     }
 }
 

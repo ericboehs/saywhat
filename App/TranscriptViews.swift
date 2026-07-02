@@ -122,6 +122,9 @@ struct SpeakerBlock: View {
     /// diarizer mis-grouped; `nil` hides the per-segment option (only whole-speaker
     /// rename is offered).
     var onReassign: ((String) -> Void)?
+    /// Names to offer one-tap in the rename popover — the meeting's attendee
+    /// roster (DESIGN.md §6). Empty shows the plain free-text editor.
+    var nameSuggestions: [String] = []
     /// A diagnostic line (slot, resolved identity, match score) shown beneath the
     /// name when the Debug overlay is on; `nil` hides it.
     var debugLine: String?
@@ -230,6 +233,19 @@ struct SpeakerBlock: View {
                 .textFieldStyle(.roundedBorder)
                 .frame(width: 220)
                 .onSubmit(save)
+            if !suggestionMatches.isEmpty {
+                VStack(alignment: .leading, spacing: 2) {
+                    ForEach(suggestionMatches, id: \.self) { suggestion in
+                        Button {
+                            draftName = suggestion
+                            save()
+                        } label: {
+                            Label(suggestion, systemImage: "person.crop.circle")
+                        }
+                        .buttonStyle(.borderless)
+                    }
+                }
+            }
             HStack {
                 Spacer()
                 Button("Save", action: save)
@@ -237,6 +253,18 @@ struct SpeakerBlock: View {
             }
         }
         .padding(12)
+    }
+
+    /// The attendee suggestions to show under the name field: all of them until
+    /// the user starts typing something new, then narrowed to matches, capped so
+    /// a big invite doesn't swallow the popover.
+    private var suggestionMatches: [String] {
+        let draft = draftName.trimmingCharacters(in: .whitespacesAndNewlines)
+        let untouched = draft.isEmpty || draft == (name ?? label.displayName)
+        let matches = untouched
+            ? nameSuggestions
+            : nameSuggestions.filter { $0.localizedCaseInsensitiveContains(draft) }
+        return Array(matches.prefix(5))
     }
 
     /// The turn's text — each word a link carrying its start time, the active word
@@ -348,6 +376,8 @@ struct FinalTranscriptView: View {
     /// Reassign a single utterance (by id) to a person, correcting one mis-grouped
     /// segment; `nil` disables the per-segment option.
     var onReassign: ((Int, String) -> Void)?
+    /// Attendee names offered one-tap in the rename popover; empty shows none.
+    var nameSuggestions: [String] = []
     /// Per-utterance diagnostic line for the Debug overlay; `nil` (off) shows none.
     var debugLine: ((Transcript.Utterance) -> String?)?
 
@@ -371,6 +401,7 @@ struct FinalTranscriptView: View {
                                 onSeek: onSeek,
                                 onRename: renameHandler(for: utterance.speaker),
                                 onReassign: reassignHandler(for: utterance),
+                                nameSuggestions: nameSuggestions,
                                 debugLine: debugLine?(utterance)
                             )
                             .id(utterance.id)

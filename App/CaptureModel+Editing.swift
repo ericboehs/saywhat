@@ -47,11 +47,18 @@ extension CaptureModel {
     private func bindVoice(_ exemplar: Voiceprint, to name: String) -> Person? {
         guard let store = voiceprintStore else { return nil }
         do {
-            let person = try store.person(named: name) ?? {
+            var person = try store.person(named: name) ?? {
                 let created = Person(name: name)
                 try store.savePerson(created)
                 return created
             }()
+            // When the name came off the meeting's invite roster, link the
+            // attendee's email so future rosters can pre-match this voice.
+            let invited = AttendeeRoster.attendee(named: name, in: meeting?.attendees ?? [])
+            if person.email == nil, let email = invited?.email {
+                person.email = email
+                try store.savePerson(person)
+            }
             var bound = exemplar
             bound.personID = person.id
             try store.save(bound)
@@ -78,6 +85,35 @@ extension CaptureModel {
         }
     }
 
+    /// Whether the open recording can be reprocessed: one is selected and we're
+    /// idle (not recording, not already mid-finalize).
+    var canReprocess: Bool {
+        selectedSessionID != nil && !isRecording && finalizeStatus == nil
+    }
+
+    /// Re-run the final pass over the selected recording's saved audio, replacing
+    /// its transcript — for when a model improved, or after enrolling/merging
+    /// voiceprints so identities re-resolve cleanly. Because naming is persisted as
+    /// voiceprints, prior names carry into the new transcript; manual per-segment
+    /// reassignments that weren't voiceprint-backed are not preserved. The durable
+    /// audio is never touched. A no-op unless ``canReprocess``.
+    func reprocessSelected() {
+        guard canReprocess, let id = selectedSessionID,
+              let session = sessions.first(where: { $0.id == id }) else { return }
+        Task { await runFinalPass(RecordingSession(directory: session.directory)) }
+    }
+
+    /// A reader-facing description of a final-pass stage.
+    static func describe(_ phase: FinalPass.Phase) -> String {
+        switch phase {
+        case .transcribing(.microphone): "Transcribing your audio…"
+        case .transcribing(.system): "Transcribing the meeting…"
+        case .diarizing: "Separating speakers…"
+        case .identifying: "Identifying speakers…"
+        case .merging: "Assembling transcript…"
+        }
+    }
+
     /// Reload the list of past recordings from disk, newest first. Cheap directory
     /// enumeration; call on launch and whenever a recording finalizes.
     func refreshSessions() {
@@ -101,6 +137,7 @@ extension CaptureModel {
         if selectedSessionID == id {
             selectedSessionID = nil
             sessionPath = nil
+            meeting = nil
             finalTranscript = nil
             speakers = [:]
             utteranceVoiceprints = [:]
@@ -120,6 +157,7 @@ extension CaptureModel {
         guard !isRecording, let session = sessions.first(where: { $0.id == id }) else { return }
         selectedSessionID = id
         sessionPath = session.directory.path
+        meeting = MeetingStore(directory: session.directory).load()
         finalizeStatus = nil
         errorMessage = nil
 
