@@ -134,6 +134,25 @@ struct VoiceprintStoreTests {
         #expect(try store.enrolledPersons().first?.exemplars.map(\.embedding) == [[1, 0]])
     }
 
+    @Test("a person's attendee-email link persists and can be added later")
+    func personEmail() throws {
+        let path = FileManager.default.temporaryDirectory
+            .appendingPathComponent("voiceprints-\(UUID().uuidString).sqlite").path
+        defer { try? FileManager.default.removeItem(atPath: path) }
+
+        let store = try VoiceprintStore(path: path)
+        var alex = Person(name: "Alex", email: "alex@example.com")
+        try store.savePerson(alex)
+        try store.save(Voiceprint(personID: alex.id, embedding: [1, 0]))
+
+        #expect(try VoiceprintStore(path: path).person(named: "Alex")?.email == "alex@example.com")
+
+        // Naming from a later invite adds the link to an existing person.
+        alex.email = "alex.teal@example.com"
+        try store.savePerson(alex)
+        #expect(try store.enrolledPersons().first?.person.email == "alex.teal@example.com")
+    }
+
     // MARK: legacy migration
 
     @Test(

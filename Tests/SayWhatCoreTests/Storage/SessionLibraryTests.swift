@@ -63,6 +63,25 @@ struct SessionLibraryTests {
         #expect(SessionLibrary.sessions(in: root).map(\.id) == ["session-2000"])
     }
 
+    @Test("a session's saved meeting titles its row; sessions without one stay untitled")
+    func titlesFromSavedMeeting() throws {
+        let root = try makeRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        try makeSession(1000, in: root, recording: true)
+        try makeSession(2000, in: root, recording: true)
+        try MeetingStore(directory: root.appendingPathComponent("session-2000")).save(
+            MeetingEvent(
+                title: "EERT sync",
+                start: Date(timeIntervalSince1970: 2000),
+                end: Date(timeIntervalSince1970: 3800)
+            )
+        )
+
+        let sessions = SessionLibrary.sessions(in: root)
+
+        #expect(sessions.map(\.title) == ["EERT sync", nil])
+    }
+
     @Test("a missing root lists nothing rather than throwing")
     func missingRootIsEmpty() {
         let absent = FileManager.default.temporaryDirectory
