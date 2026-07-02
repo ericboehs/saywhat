@@ -13,6 +13,7 @@ struct SayWhatApp: App {
         }
         .windowResizability(.contentSize)
         .commands {
+            FindCommands()
             DebugCommands()
         }
 
