@@ -13,6 +13,12 @@
 	     telemetry, no audio/transcript ever leaves the machine. DESIGN.md §3. -->
 	<key>com.apple.security.network.client</key>
 	<true/>
+	<!-- Optional, read-only calendar lookup: match a recording to the current
+	     event for its title and attendee roster (DESIGN.md §6). Off by default;
+	     enabled by a Settings toggle. Nothing is ever written to the calendar
+	     and the lookup never leaves the machine. -->
+	<key>com.apple.security.personal-information.calendars</key>
+	<true/>
 	<!-- Read access to a file the user picks in the Debug ▸ Import Recording
 	     open panel, so an external recording can be copied into the container and
 	     transcribed for testing. Read-only: the import copies, never writes back. -->

@@ -89,6 +89,14 @@ public struct VoiceprintStore: Sendable {
                 table.drop(column: "name")
             }
         }
+        // Link a person to the calendar-attendee email they were named from, so
+        // a future meeting's invite roster can pre-match attendees to enrolled
+        // voices. Nullable: most people are never tied to an invite.
+        migrator.registerMigration("addPersonEmail") { db in
+            try db.alter(table: "person") { table in
+                table.add(column: "email", .text)
+            }
+        }
         try migrator.migrate(database)
     }
 
@@ -99,7 +107,7 @@ public struct VoiceprintStore: Sendable {
     public func enrolledPersons() throws -> [EnrolledPerson] {
         try database.read { db in
             let persons = try Row
-                .fetchAll(db, sql: "SELECT id, name FROM person ORDER BY name")
+                .fetchAll(db, sql: "SELECT id, name, email FROM person ORDER BY name")
                 .compactMap(Self.person(from:))
             let exemplars = try Row
                 .fetchAll(
@@ -122,7 +130,7 @@ public struct VoiceprintStore: Sendable {
             try Row
                 .fetchOne(
                     db,
-                    sql: "SELECT id, name FROM person WHERE name = ? LIMIT 1",
+                    sql: "SELECT id, name, email FROM person WHERE name = ? LIMIT 1",
                     arguments: [name]
                 )
                 .flatMap(Self.person(from:))
@@ -133,8 +141,8 @@ public struct VoiceprintStore: Sendable {
     public func savePerson(_ person: Person) throws {
         try database.write { db in
             try db.execute(
-                sql: "INSERT OR REPLACE INTO person (id, name) VALUES (?, ?)",
-                arguments: [person.id.uuidString, person.name]
+                sql: "INSERT OR REPLACE INTO person (id, name, email) VALUES (?, ?, ?)",
+                arguments: [person.id.uuidString, person.name, person.email]
             )
         }
     }
@@ -189,7 +197,7 @@ public struct VoiceprintStore: Sendable {
     private static func person(from row: Row) -> Person? {
         let idText: String = row["id"]
         guard let id = UUID(uuidString: idText) else { return nil }
-        return Person(id: id, name: row["name"])
+        return Person(id: id, name: row["name"], email: row["email"])
     }
 
     /// Reconstruct a ``Voiceprint`` from a row, skipping any whose id isn't a valid

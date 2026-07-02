@@ -83,7 +83,15 @@ private struct SessionRow: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
-            Text(session.date.formatted(date: .abbreviated, time: .shortened))
+            if let title = session.title {
+                Text(title)
+                    .lineLimit(1)
+                Text(session.date.formatted(date: .abbreviated, time: .shortened))
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            } else {
+                Text(session.date.formatted(date: .abbreviated, time: .shortened))
+            }
             if isRecording {
                 Label("Recording…", systemImage: "record.circle")
                     .font(.caption2)
@@ -123,6 +131,11 @@ private struct DetailPane: View {
                     .font(.caption2)
                     .monospacedDigit()
                     .foregroundStyle(.tertiary)
+            }
+
+            if let meeting = model.meeting {
+                Text(meeting.title)
+                    .font(.headline)
             }
 
             if model.isRecording {
@@ -213,6 +226,7 @@ private struct DetailPane: View {
                 onSeek: { model.playback?.seek(to: $0) },
                 onRename: { slot, name in model.renameSpeaker(slot: slot, to: name) },
                 onReassign: { id, name in model.reassignUtterance(id: id, to: name) },
+                nameSuggestions: model.attendeeSuggestions,
                 debugLine: showDebug ? { model.debugLine(for: $0) } : nil
             )
             playbackBar
