@@ -6,7 +6,7 @@ import SayWhatCore
 /// the pipeline over a file and scoring it against ground truth without the GUI loop.
 ///
 /// It is a *sibling* of the app, not a backend it shells out to: both consume
-/// `SayWhatCore` directly; this one just speaks JSONL instead of SwiftUI. Two
+/// `SayWhatCore` directly; this one just speaks JSONL instead of SwiftUI. Three
 /// subcommands today:
 ///
 ///     saywhat transcribe <audio> [--out file.jsonl]
@@ -16,6 +16,10 @@ import SayWhatCore
 ///     saywhat bench <hypothesis.jsonl> <reference.jsonl> [--system name]
 ///         Score a hypothesis transcript against a ground-truth reference —
 ///         WER, DER + cluster consistency, boundary accuracy.
+///
+///     saywhat brief <transcript.jsonl | session-dir> [--floor words]
+///         Replay a finalized transcript through the live-brief fold as if the
+///         meeting were live, printing each pass — the L1 tuning spike.
 @main
 enum CLI {
     static func main() async {
@@ -30,6 +34,7 @@ enum CLI {
             switch command {
             case "transcribe": try await transcribe(args)
             case "bench": try bench(args)
+            case "brief": try await brief(args)
             case "-h", "--help", "help": usage()
             default:
                 FileHandle.standardError.write(Data("unknown command: \(command)\n\n".utf8))
@@ -132,6 +137,100 @@ enum CLI {
         print(report.summary())
     }
 
+    // MARK: brief
+
+    /// The Phase-L1 replay spike (docs/live-intelligence.md): replay a finalized
+    /// transcript through the live-brief fold as if the meeting were happening
+    /// now, printing the brief after every pass. This is the harness for tuning
+    /// prompt, schema, and cadence against real recordings, cheaply and
+    /// reproducibly, without the GUI loop.
+    private static func brief(_ args: [String]) async throws {
+        let options = Options(args)
+        guard let path = options.positional.first else {
+            throw CLIError(
+                "brief needs a transcript: a .jsonl from `saywhat transcribe`, or a session directory"
+            )
+        }
+        let transcript = try loadTranscript(path)
+        guard !transcript.isEmpty else { throw CLIError("transcript is empty") }
+        let floor = options.value("--floor").flatMap { Int($0) } ?? 80
+
+        let fold = LiveBriefFold(analyst: FoundationModelsAnalystAdapter(), wordFloor: floor)
+        var printed = 0
+        for utterance in transcript.utterances {
+            await fold.ingest(LiveBriefFold.Segment(
+                speaker: utterance.speakerName ?? genericName(utterance.speaker),
+                text: utterance.text,
+                time: utterance.start
+            ))
+            printed = await report(fold, after: printed)
+        }
+        await fold.finish()
+        printed = await report(fold, after: printed)
+        if printed == 0 {
+            if let error = await fold.lastError {
+                progress("no brief produced — every pass failed. Last: \(error)\n")
+            } else {
+                progress(
+                    "no fold pass ran — transcript shorter than the --floor of \(floor) words?\n"
+                )
+            }
+        }
+    }
+
+    /// Print the brief when a new pass completed since `printed`; surface a
+    /// skipped (failed) pass on stderr. Returns the new pass count.
+    private static func report(_ fold: LiveBriefFold, after printed: Int) async -> Int {
+        if let error = await fold.lastError {
+            progress("pass skipped: \(error)\n")
+        }
+        let passes = await fold.passes
+        guard passes > printed else { return printed }
+        let state = await fold.snapshot()
+        print("\n━━ pass \(passes) ━━")
+        for (title, items) in [
+            ("NEXT STEPS", state.nextSteps),
+            ("OPEN QUESTIONS", state.openQuestions),
+            ("SUGGESTED QUESTIONS", state.suggestedQuestions),
+        ] {
+            print(title)
+            if items.isEmpty { print("  (none)") }
+            for item in items {
+                var line = "  [\(LiveBriefFold.timecode(item.at))] \(item.text)"
+                if let speaker = item.speaker { line += " — \(speaker)" }
+                if item.resolved { line += " ✓resolved" }
+                print(line)
+            }
+        }
+        return passes
+    }
+
+    /// A transcript from either a `.jsonl` file (the CLI's native format) or a
+    /// session directory holding the app's saved `transcript.json`.
+    private static func loadTranscript(_ path: String) throws -> Transcript {
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory) else {
+            throw CLIError("no such file: \(path)")
+        }
+        if isDirectory.boolValue {
+            let store = TranscriptStore(directory: URL(fileURLWithPath: path, isDirectory: true))
+            guard let document = try store.load() else {
+                throw CLIError("no saved transcript in \(path)")
+            }
+            return document.transcript
+        }
+        return try TranscriptJSONL.decode(String(contentsOfFile: path, encoding: .utf8))
+    }
+
+    /// The label the live view would have shown: remote slots are 0-based on the
+    /// wire, 1-based on screen.
+    private static func genericName(_ label: SpeakerLabel) -> String {
+        switch label {
+        case .you: "You"
+        case let .remote(slot): "Speaker \(slot + 1)"
+        }
+    }
+
     // MARK: helpers
 
     private static func scratchSession() -> URL {
@@ -150,6 +249,10 @@ enum CLI {
         USAGE:
           saywhat transcribe <audio> [--engine ondevice|deepgram] [--out file.jsonl]
           saywhat bench <hypothesis.jsonl> <reference.jsonl> [--system name]
+          saywhat brief <transcript.jsonl | session-dir> [--floor words]
+              Replay a finalized transcript through the live-brief fold (Apple
+              Foundation Models) as if the meeting were live, printing the brief
+              after every pass — the docs/live-intelligence.md L1 spike.
 
         ENGINES:
           ondevice  (default)  on-device final pass — Parakeet + Sortformer
