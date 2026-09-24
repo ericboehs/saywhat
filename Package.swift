@@ -30,7 +30,7 @@ let package = Package(
         // note for commercial use (CLAUDE.md). Models download on first use.
         .package(
             url: "https://github.com/FluidInference/FluidAudio.git",
-            .upToNextMinor(from: "0.15.4")
+            .upToNextMinor(from: "0.16.1")
         ),
         // Local SQLite store (retention, persistent speaker voiceprints).
         // On-device only; nothing here ever leaves the machine (DESIGN.md §9).
